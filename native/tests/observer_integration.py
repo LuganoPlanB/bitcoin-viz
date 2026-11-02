@@ -1,6 +1,7 @@
 """Controlled HTTP RPC + actual libzmq IPC tests using only Python's stdlib."""
 
 import base64
+import contextlib
 import ctypes
 import ctypes.util
 import http.server
@@ -32,7 +33,7 @@ def until(predicate, label, timeout=4):
 
 
 def rows(path, query, params=()):
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.2) as db:
+    with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.2)) as db:
         return db.execute(query, params).fetchall()
 
 
@@ -109,6 +110,9 @@ def main():
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
             def log_message(self, *args): pass
+            def handle(self):
+                try: super().handle()
+                except ConnectionError: pass  # The observer deliberately closes connections during recovery.
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 with lock:
@@ -154,7 +158,7 @@ def main():
         try:
             with (root / "observer.stderr").open("w") as error:
                 process = subprocess.Popen([str(binary), "observe", "--db", str(database), "--cookie", str(cookie), "--rpc-url", rpc_url,
-                    "--capture-dir", str(capture.parent), "--peer-interval", "0.1", "--reconcile-interval", "0.2", "--metadata-budget", "0", "--duration", "15"],
+                    "--capture-dir", str(capture.parent), "--peer-interval", "0.1", "--reconcile-interval", "60", "--metadata-budget", "0", "--duration", "15"],
                     stdout=subprocess.DEVNULL, stderr=error, env=environment)
                 until(lambda: meta(database, "synchronized"), "initial snapshot")
                 until(lambda: rows(database, "SELECT 1 FROM events WHERE cause='capture-incomplete-record'"), "partial capture gap")
@@ -182,6 +186,10 @@ def main():
                 with lock:
                     current["credential"] = "user:second"
                     cookie.write_text("user:second")
+                # Force reconciliation through an outer-counter gap. Periodic
+                # snapshots are disabled during injected-event assertions so
+                # they cannot legitimately win the race and cover an A/R first.
+                publisher.send("A", 99, 16, 101)
                 until(lambda: rows(database, "SELECT 1 FROM events WHERE cause='node-restart'"), "credential rotation and session reset")
                 assert meta(database, "node_run") != old_run
                 until(lambda: all(old_run not in r[0] for r in rows(database, "SELECT id FROM peers")), "peer session refresh")
@@ -204,6 +212,10 @@ def main():
                 process.stdout.close()
                 assert meta(live_db, "synchronized") is False
             assert "getrawmempool" in calls and "getzmqnotifications" in calls
+        except Exception:
+            for diagnostic in (root / "observer.stderr", root / "live.stderr"):
+                if diagnostic.is_file(): print(diagnostic.name + ":\n" + diagnostic.read_text(errors="replace")[-4000:], file=sys.stderr)
+            raise
         finally:
             if process and process.poll() is None:
                 process.terminate()

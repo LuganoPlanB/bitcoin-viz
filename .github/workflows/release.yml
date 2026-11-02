@@ -137,7 +137,8 @@ jobs:
           repository: microsoft/vcpkg
           ref: ${{ env.VCPKG_COMMIT }}
           path: .tools/vcpkg
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: dependencies
         with:
           path: .cache/vcpkg
           key: vcpkg-linux-${{ matrix.arch }}-dyne-2.5.1-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ci/**') }}
@@ -156,6 +157,7 @@ jobs:
         run: |
           cmake -S . -B build/package -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/.tools/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/ci/toolchains/musl.cmake" \
             -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/ci/triplets" -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
             -DCMAKE_CROSSCOMPILING_EMULATOR="$EMULATOR" -DBWC_VERSION="$RELEASE_VERSION"
           cmake --build build/package --parallel 2
@@ -165,6 +167,13 @@ jobs:
             exit 1
           fi
           cmake --install build/package --prefix "$GITHUB_WORKSPACE/.release/stage"
+          binary="$GITHUB_WORKSPACE/.release/stage/bin/bitcoin-wizard-cave-native"
+          if test -n "$EMULATOR"; then
+            actual_version="$("$EMULATOR" "$binary" --version)"
+          else
+            actual_version="$("$binary" --version)"
+          fi
+          test "$actual_version" = "$RELEASE_VERSION (native C++17)"
       - name: Package
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -179,6 +188,11 @@ jobs:
           path: .release/assets/*
           include-hidden-files: true
           if-no-files-found: error
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: always() && steps.dependencies.outputs.cache-hit != 'true'
+        with:
+          path: .cache/vcpkg
+          key: ${{ steps.dependencies.outputs.cache-primary-key }}
 
   desktop:
     needs: version
@@ -228,7 +242,8 @@ jobs:
           repository: microsoft/vcpkg
           ref: ${{ env.VCPKG_COMMIT }}
           path: .tools/vcpkg
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: dependencies
         with:
           path: .cache/vcpkg
           key: vcpkg-${{ matrix.runner }}-${{ matrix.arch }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ci/**') }}
@@ -261,10 +276,15 @@ jobs:
           -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/ci/triplets" -DVCPKG_TARGET_TRIPLET="$TRIPLET"
           -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
       - name: Build, test and install
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           cmake --build build/package --config Release --parallel 2
           ctest --test-dir build/package -C Release --output-on-failure
           cmake --install build/package --config Release --prefix "$GITHUB_WORKSPACE/.release/stage"
+          binary="$GITHUB_WORKSPACE/.release/stage/bin/bitcoin-wizard-cave-native"
+          if test "$RUNNER_OS" = Windows; then binary="$binary.exe"; fi
+          test "$("$binary" --version)" = "$RELEASE_VERSION (native C++17)"
       - name: Package
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -280,6 +300,11 @@ jobs:
           path: .release/assets/*
           include-hidden-files: true
           if-no-files-found: error
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: always() && steps.dependencies.outputs.cache-hit != 'true'
+        with:
+          path: .cache/vcpkg
+          key: ${{ steps.dependencies.outputs.cache-primary-key }}
 
   publish:
     needs: [version, quality, linux, desktop]
