@@ -9,3 +9,6 @@ dist/
 docs/previews/*.stderr
 docs/native-previews/*.stderr
 CMakeUserPresets.json
+.release/
+.cache/
+vcpkg_installed/

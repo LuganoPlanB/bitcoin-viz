@@ -2,9 +2,6 @@
 #include "wizard.hpp"
 #include <sqlite3.h>
 #include <openssl/evp.h>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
 #include <array>
 #include <algorithm>
 #include <cerrno>
@@ -52,7 +49,7 @@ std::string session_id() {
 Store::Store(const std::filesystem::path& path, bool readonly) {
     if (!readonly && path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
     const int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
-    if (sqlite3_open_v2(path.c_str(), &db_, flags | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
+    if (sqlite3_open_v2(path.u8string().c_str(), &db_, flags | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
         std::string error = db_ ? sqlite3_errmsg(db_) : "allocation failed";
         if (db_) sqlite3_close(db_);
         db_ = nullptr;
@@ -176,15 +173,4 @@ Transaction::Transaction(Store& store, bool write) : store_(store) { store_.sql(
 Transaction::~Transaction() { if (!done_) { try { store_.sql("ROLLBACK"); } catch (...) {} } }
 void Transaction::commit() { store_.sql("COMMIT"); done_ = true; }
 
-WriterLock::WriterLock(const std::filesystem::path& database) {
-    if (database.has_parent_path()) std::filesystem::create_directories(database.parent_path());
-    const auto path = database.string() + ".writer.lock";
-    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-    if (fd_ < 0) throw std::runtime_error("Cannot open observer writer lock");
-    if (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
-        ::close(fd_); fd_ = -1;
-        throw std::runtime_error("An observer/ingester already owns this database");
-    }
-}
-WriterLock::~WriterLock() { if (fd_ >= 0) ::close(fd_); }
 } // namespace wizard

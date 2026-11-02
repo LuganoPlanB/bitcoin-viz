@@ -1,7 +1,7 @@
 """One model writer; bounded ingress, atomic state, periodic exact reconciliation."""
 
 import contextlib
-import fcntl
+import os
 import queue
 import sys
 import time
@@ -11,6 +11,11 @@ from pathlib import Path
 from .core import RPCError, SequenceFeed, endpoint
 from .model import Model, RebuildRequired, fee_metadata
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 
 @contextlib.contextmanager
 def writer_lock(database):
@@ -18,10 +23,22 @@ def writer_lock(database):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == "nt":
+                if path.stat().st_size == 0:
+                    lock.write("\0")
+                    lock.flush()
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             raise RuntimeError("An observer/ingester already owns this database") from None
-        yield
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class Observer:

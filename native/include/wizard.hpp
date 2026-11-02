@@ -71,7 +71,7 @@ public:
 };
 
 class WriterLock {
-    int fd_ = -1;
+    std::intptr_t handle_ = -1;
 public:
     explicit WriterLock(const std::filesystem::path& database);
     ~WriterLock();

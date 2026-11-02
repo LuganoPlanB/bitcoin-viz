@@ -48,8 +48,10 @@ Install the executable and licenses to a chosen prefix:
 cmake --install build/release --prefix "$HOME/.local"
 ```
 
-Linux x86_64 is the tested platform. The implementation uses POSIX file locking,
-signals, nonblocking pipes and file APIs; Windows is not supported by this build.
+The release workflow targets Linux x86_64/arm64, macOS x86_64/arm64 and Windows
+x86_64. POSIX and Win32 implementations provide file locking, capture reads and
+interruptible output. Windows uses loopback TCP ZMQ publishers; filesystem IPC
+remains the default for colocated Linux/macOS nodes. See [release builds](RELEASING.md).
 No C ABI or installed SDK is promised; `wizard_native` is an internal static
 library used by the CLI and native tests.
 
@@ -106,6 +108,7 @@ It reproduces the Python demo's state and projections.
 | `capture.cpp` | Core capture framing, selective inventory links, persistent offsets and source gaps |
 | `render.cpp` | Scene bootstrap and committed-action reading with presentation caps |
 | `main.cpp` | CLI, signals, interruptible output and thread lifetime, synthetic demo/replay |
+| `platform.cpp` | POSIX/Win32 locking, positioned file reads, stdout cancellation and Core data-directory defaults |
 
 SQLite state, inverse patches and presentation actions commit together. Failed
 operations roll back. The receiver queue is capped at 8,192 records; overflow and

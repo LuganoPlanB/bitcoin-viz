@@ -244,13 +244,21 @@ int main() {
         rejects([] { endpoint("tcp://0.0.0.0:28332"); }); rejects([] { endpoint("unix:relative.sock"); });
         rejects([] { RPC r("http://remote.example:8332","/tmp/cookie"); }); rejects([] { RPC r("http://user:pass@127.0.0.1:38332","/tmp/cookie"); });
     });
-    test("real libzmq IPC subscriber receives multipart",[] {
-        Temp temp; const auto address="ipc://"+(temp.path/"sequence.sock").string();
+    test("real libzmq subscriber receives multipart",[] {
+        Temp temp;
+#ifdef _WIN32
+        std::string address="tcp://127.0.0.1:*";
+#else
+        std::string address="ipc://"+(temp.path/"sequence.sock").string();
+#endif
         void* context=zmq_ctx_new(); check(context!=nullptr);
         void* publisher=zmq_socket(context,ZMQ_PUB);
         if (!publisher) { zmq_ctx_term(context); throw std::runtime_error("publisher allocation failed"); }
         int linger=0; zmq_setsockopt(publisher,ZMQ_LINGER,&linger,sizeof(linger));
         if (zmq_bind(publisher,address.c_str())) { zmq_close(publisher); zmq_ctx_term(context); throw std::runtime_error("publisher bind failed"); }
+        char resolved[256]{}; std::size_t length=sizeof(resolved);
+        if (zmq_getsockopt(publisher,ZMQ_LAST_ENDPOINT,resolved,&length)) { zmq_close(publisher); zmq_ctx_term(context); throw std::runtime_error("publisher address unavailable"); }
+        address=resolved;
         bool found=false;
         try {
             SequenceFeed feed(address); feed.start(); std::this_thread::sleep_for(std::chrono::milliseconds(300));

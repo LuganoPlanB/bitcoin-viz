@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wizard.hpp"
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "platform.hpp"
+#include "wizard_version.hpp"
 #include <cerrno>
 #include <cmath>
 #include <csignal>
@@ -17,32 +15,8 @@ namespace {
 std::atomic<bool> interrupted{false};
 static_assert(std::atomic<bool>::is_always_lock_free,"Signal stop flag must be lock free");
 void signal_stop(int) { interrupted.store(true,std::memory_order_relaxed); }
-struct OutputClosed : std::runtime_error { OutputClosed() : std::runtime_error("Output closed") {} };
-class Output {
-    int old_flags_;
-    std::function<bool()> stopped_;
-public:
-    explicit Output(std::function<bool()> stopped) : old_flags_(::fcntl(STDOUT_FILENO,F_GETFL)), stopped_(std::move(stopped)) {
-        if (old_flags_<0 || ::fcntl(STDOUT_FILENO,F_SETFL,old_flags_|O_NONBLOCK)) throw std::runtime_error("Cannot configure Gource output");
-    }
-    ~Output() { ::fcntl(STDOUT_FILENO,F_SETFL,old_flags_); }
-    void write(const std::string& line) {
-        std::size_t offset=0;
-        while (offset<line.size()) {
-            if (stopped_()) throw OutputClosed();
-            const auto n=::write(STDOUT_FILENO,line.data()+offset,line.size()-offset);
-            if (n>0) { offset+=static_cast<std::size_t>(n); continue; }
-            if (n<0 && errno==EINTR) continue;
-            if (n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)) {
-                pollfd fd{STDOUT_FILENO,POLLOUT,0};
-                if (::poll(&fd,1,100)<0 && errno!=EINTR) throw std::runtime_error("Gource output poll failed");
-                continue;
-            }
-            if (n<0 && errno==EPIPE) throw OutputClosed();
-            throw std::runtime_error("Gource output write failed");
-        }
-    }
-};
+using wizard::platform::Output;
+using wizard::platform::OutputClosed;
 std::int64_t integer(const std::string& value, bool positive=false) {
     if (value.empty() || value[0]=='-') throw std::runtime_error("Expected nonnegative integer");
     std::size_t used=0;
@@ -57,7 +31,7 @@ double duration(const std::string& value) {
     return n;
 }
 void help() {
-    std::cout << "Bitcoin Wizard Cave native 0.2.0 (C++17)\n"
+    std::cout << "Bitcoin Wizard Cave native " BWC_VERSION " (C++17)\n"
       "Usage: bitcoin-wizard-cave-native <observe|live|render|status|events|demo|replay> [options]\n"
       "  --db PATH                     SQLite database (default .runtime/wizard.sqlite)\n"
       "  --mode state|protocol|utxo     Gource projection (default state)\n"
@@ -73,8 +47,7 @@ void help() {
 wizard::Options options(int argc, char** argv) {
     using namespace wizard;
     Options o;
-    if (const char* home=std::getenv("HOME")) o.datadir=std::filesystem::path(home)/".bitcoin";
-    else o.datadir=".bitcoin";
+    o.datadir=platform::default_datadir();
     if (argc<2) throw std::runtime_error("Missing command; use --help");
     o.command=argv[1];
     const std::set<std::string> commands{"observe","live","render","status","events","demo","replay"};
@@ -175,11 +148,14 @@ void replay(Store& s, const std::filesystem::path& input) {
 
 int main(int argc, char** argv) {
     using namespace wizard;
-    ::umask(0077);
-    std::signal(SIGPIPE,SIG_IGN); std::signal(SIGINT,signal_stop); std::signal(SIGTERM,signal_stop);
+    platform::initialize_process();
+#ifndef _WIN32
+    std::signal(SIGPIPE,SIG_IGN);
+#endif
+    std::signal(SIGINT,signal_stop); std::signal(SIGTERM,signal_stop);
     try {
         if (argc==2 && (std::string(argv[1])=="--help" || std::string(argv[1])=="-h")) { help(); return 0; }
-        if (argc==2 && std::string(argv[1])=="--version") { std::cout << "0.2.0 (native C++17)\n"; return 0; }
+        if (argc==2 && std::string(argv[1])=="--version") { std::cout << BWC_VERSION " (native C++17)\n"; return 0; }
         const auto o=options(argc,argv);
         std::atomic<bool> stop{false};
         const auto stopped=[&] { return stop.load() || interrupted.load(std::memory_order_relaxed); };

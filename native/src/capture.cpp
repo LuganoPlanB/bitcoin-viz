@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wizard.hpp"
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "platform.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <limits>
@@ -19,25 +17,6 @@ std::string reversed_hex(const std::string& bytes) {
     std::string result;
     for (auto i = bytes.rbegin(); i != bytes.rend(); ++i) { auto c = static_cast<unsigned char>(*i); result += digits[c>>4U]; result += digits[c&15U]; }
     return result;
-}
-struct File {
-    int fd;
-    explicit File(const std::filesystem::path& path) : fd(::open(path.c_str(),O_RDONLY|O_CLOEXEC)) {}
-    ~File() { if (fd >= 0) ::close(fd); }
-    File(const File&) = delete;
-    File& operator=(const File&) = delete;
-};
-std::string read_at(int fd, std::uint64_t offset, std::size_t count) {
-    std::string bytes(count,'\0');
-    std::size_t done = 0;
-    while (done < count) {
-        if (offset > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())-done) throw std::runtime_error("Capture offset overflow");
-        const auto n = ::pread(fd,bytes.data()+done,count-done,static_cast<off_t>(offset+done));
-        if (n < 0) { if (errno == EINTR) continue; throw std::runtime_error("Capture read failed"); }
-        if (n == 0) break;
-        done += static_cast<std::size_t>(n);
-    }
-    bytes.resize(done); return bytes;
 }
 }
 std::pair<Json,bool> inventory(const std::string& payload, std::size_t limit) {
@@ -85,34 +64,33 @@ std::size_t CaptureReader::poll() {
     for (std::size_t i = 0; i < paths.size() && remaining; ++i) {
         const auto& path = paths[(start+i)%paths.size()];
         position_=(start+i+1)%paths.size();
-        File file(path);
-        if (file.fd < 0) { if (errno == ENOENT) continue; throw std::runtime_error("Cannot open capture file"); }
-        struct stat stat{};
-        if (::fstat(file.fd,&stat) || stat.st_size < 0) throw std::runtime_error("Cannot stat capture file");
-        const auto key="capture:"+hash256(std::filesystem::canonical(path).string());
+        platform::CaptureFile file(path);
+        if (!file.valid()) continue;
+        auto stat=file.info();
+        const auto key="capture:"+hash256(std::filesystem::canonical(path).u8string());
         auto previous=s_.get(key,Json::object());
         auto offset=previous.value("offset",std::uint64_t(0));
-        const Json identity=Json::array({std::uint64_t(stat.st_dev),std::uint64_t(stat.st_ino)});
+        const Json identity=Json::array({stat.device,stat.inode});
         Transaction tx(s_);
-        if (!previous.empty() && (previous.value("identity",Json(nullptr)) != identity || std::uint64_t(stat.st_size) < offset)) {
+        if (!previous.empty() && (previous.value("identity",Json(nullptr)) != identity || stat.size < offset)) {
             s_.event("observer.source-loss","node:observer","capture-rotation-or-truncation",{{"file",path.string()}});
             offset=0; previous=Json::object();
         }
         previous["offset"]=offset; previous["identity"]=identity;
         while (remaining) {
-            auto header=read_at(file.fd,offset,24);
+            auto header=file.read_at(offset,24);
             if (header.empty()) break;
             if (header.size()!=24) { partial(key,previous,path); break; }
             const auto timestamp=le(header,0,8), size=le(header,20,4);
             if (size>4000000) { partial(key,previous,path,"oversize-or-invalid-capture"); break; }
-            if (::fstat(file.fd,&stat) || stat.st_size < 0) throw std::runtime_error("Cannot stat capture file");
-            if (std::uint64_t(stat.st_size)<offset || std::uint64_t(stat.st_size)-offset < 24+size) { partial(key,previous,path); break; }
+            stat=file.info();
+            if (stat.size<offset || stat.size-offset < 24+size) { partial(key,previous,path); break; }
             auto command=header.substr(8,12);
             if (auto zero=command.find('\0'); zero!=std::string::npos) command.resize(zero);
             Json objects=nullptr;
             if (command=="inv" || command=="getdata" || command=="notfound") {
                 try {
-                    auto parsed=inventory(read_at(file.fd,offset+24,static_cast<std::size_t>(size)));
+                    auto parsed=inventory(file.read_at(offset+24,static_cast<std::size_t>(size)));
                     objects=std::move(parsed.first);
                     if (parsed.second) s_.event("observer.coverage","node:observer","inventory-link-sampling",{{"file",path.string()},{"limit",1000}});
                 } catch (const std::exception& e) { s_.event("observer.source-loss","node:observer","incomplete-inventory",{{"error",e.what()},{"file",path.string()}}); }
@@ -120,7 +98,7 @@ std::size_t CaptureReader::poll() {
             if (timestamp>std::uint64_t(std::numeric_limits<std::int64_t>::max()/1000)) {
                 partial(key,previous,path,"invalid-capture-timestamp"); break;
             }
-            const auto peer="capture-"+text(s_.get("node_run"))+"-"+component(path.parent_path().filename().string())+"-"+std::to_string(stat.st_ino);
+            const auto peer="capture-"+text(s_.get("node_run"))+"-"+component(path.parent_path().filename().u8string())+"-"+std::to_string(stat.inode);
             model_.message(peer,path.filename()=="msgs_recv.dat" ? "incoming" : "outgoing",command,static_cast<std::int64_t>(size),
                            "message-capture",timestamp*1000,objects);
             offset+=24+size; --remaining;

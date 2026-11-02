@@ -46,6 +46,19 @@ def meta(path, key):
 
 class Publisher:
     def __init__(self, path):
+        self.python_zmq = None
+        try:
+            import zmq
+            self.python_zmq = zmq
+        except ImportError:
+            pass
+        if self.python_zmq is not None:
+            self.context = zmq.Context()
+            self.socket = self.context.socket(zmq.PUB)
+            address = "tcp://127.0.0.1:*" if os.name == "nt" else "ipc://" + str(path)
+            self.socket.bind(address)
+            self.endpoint = self.socket.getsockopt(zmq.LAST_ENDPOINT).decode()
+            return
         self.lib = ctypes.CDLL(ctypes.util.find_library("zmq"))
         for name, restype, args in [
             ("zmq_ctx_new", ctypes.c_void_p, []),
@@ -67,10 +80,17 @@ class Publisher:
 
     def send(self, label, n, counter, sequence):
         frames = [b"sequence", bytes.fromhex(h(n)) + label.encode() + struct.pack("<Q", sequence), struct.pack("<I", counter)]
+        if self.python_zmq is not None:
+            self.socket.send_multipart(frames)
+            return
         for i, frame in enumerate(frames):
             assert self.lib.zmq_send(self.socket, frame, len(frame), 2 if i < 2 else 0) == len(frame)
 
     def close(self):
+        if self.python_zmq is not None:
+            self.socket.close(0)
+            self.context.term()
+            return
         self.lib.zmq_close(self.socket)
         self.lib.zmq_ctx_term(self.context)
 
@@ -166,8 +186,8 @@ def main():
                 assert meta(database, "node_run") != old_run
                 until(lambda: all(old_run not in r[0] for r in rows(database, "SELECT id FROM peers")), "peer session refresh")
                 assert len(rows(database, "SELECT 1 FROM events WHERE cause='message-capture'")) == 1, "Capture record was duplicated"
-                process.send_signal(signal.SIGTERM)
-                assert process.wait(timeout=5) == 0
+                if os.name != "nt": process.send_signal(signal.SIGTERM)
+                assert process.wait(timeout=20 if os.name == "nt" else 5) == 0
                 assert meta(database, "synchronized") is False
             # Keep stdout unread so the live renderer actually blocks on a full
             # pipe. RPC reconciliation must progress, and shutdown must settle.
@@ -175,7 +195,7 @@ def main():
             live_db = root / "live.sqlite"
             with (root / "live.stderr").open("w") as error:
                 process = subprocess.Popen([str(binary), "live", "--db", str(live_db), "--cookie", str(cookie), "--rpc-url", rpc_url,
-                    "--peer-interval", "0.1", "--reconcile-interval", "0.2", "--metadata-budget", "0", "--duration", "1.5"],
+                    "--peer-interval", "0.1", "--reconcile-interval", "0.2", "--metadata-budget", "0", "--duration", "3"],
                     stdout=subprocess.PIPE, stderr=error, env=environment)
                 first = until(lambda: meta(live_db, "last_reconcile_ns"), "live snapshot")
                 until(lambda: meta(live_db, "last_reconcile_ns") > first, "reconciliation while stdout unread")

@@ -9,6 +9,12 @@ Two independent implementations live here: **C++17 with CMake** and **Python**.
 Both implement all three modes and use the same version-1 SQLite state/journal.
 The native executable runs directly against Core and Gource.
 
+[Download versioned native binaries](https://github.com/jaromil/bitcoin-wizard-cave/releases)
+for Linux x86_64/arm64, macOS Intel/Apple Silicon, and Windows x86_64.
+Linux releases use static Dyne musl builds. Each release includes SHA256 checksums,
+dependency licenses and an exact source-commit manifest.
+See [release automation](docs/RELEASING.md).
+
 Recorded signet previews: [working state](docs/previews/state.mp4),
 [protocol](docs/previews/protocol.mp4), [UTXO window](docs/previews/utxo.mp4).
 The [verification notes](docs/VERIFICATION.md) explain their coverage.
