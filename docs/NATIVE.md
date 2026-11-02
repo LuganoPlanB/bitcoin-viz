@@ -171,9 +171,9 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
 UBSAN_OPTIONS=halt_on_error=1 ctest --preset sanitize
 ```
 
-All four CTest suites passed in both build variants:
+All five CTest suites passed in both build variants:
 
-- `native-contract`: 35 passing cases covering model invariants, atomic rollback, reversed undo, pending
+- `native-contract`: 36 passing cases covering portable UTF-8 paths, model invariants, atomic rollback, reversed undo, pending
   overlays, visibility/pruning, peer deltas/sessions, exact wire/decimal handling,
   capture continuation/fairness, writer exclusion and a real libzmq IPC receiver.
 - `python-contract`: the existing 34 Python tests, with no skips.
@@ -184,6 +184,8 @@ All four CTest suites passed in both build variants:
   publisher exercise admission/removal, missing outer counters, legitimate inner
   sequence jumps, exact snapshot membership, cookie/session rotation, capture
   continuation, proxy bypass and shutdown while stdout is deliberately unread.
+- `release-tools`: eight cases covering source versioning, complete platform
+  archives, manifests, licenses and checksums.
 
 No address, leak or undefined-behavior findings were reported for those suites.
 Python is used as a test driver/oracle, not by the native executable.

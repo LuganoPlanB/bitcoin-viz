@@ -36,7 +36,7 @@ add_library(wizard_native STATIC
   native/src/storage.cpp native/src/model.cpp native/src/core.cpp
   native/src/observer.cpp native/src/render.cpp native/src/capture.cpp native/src/platform.cpp)
 target_compile_features(wizard_native PUBLIC cxx_std_17)
-set_target_properties(wizard_native PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties(wizard_native PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(wizard_native PUBLIC native/include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_include_directories(wizard_native SYSTEM PUBLIC native/third_party)
 target_link_libraries(wizard_native PUBLIC SQLite::SQLite3 CURL::libcurl
@@ -48,6 +48,7 @@ target_compile_options(wizard_native PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>)
 
 add_executable(bitcoin-wizard-cave-native native/src/main.cpp)
+set_target_properties(bitcoin-wizard-cave-native PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_link_libraries(bitcoin-wizard-cave-native PRIVATE wizard_native)
 target_compile_options(bitcoin-wizard-cave-native PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
@@ -65,6 +66,7 @@ install(FILES native/third_party/nlohmann/LICENSE.MIT
 
 if(BUILD_TESTING)
   add_executable(wizard-native-contract native/tests/contract.cpp)
+  set_target_properties(wizard-native-contract PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   target_link_libraries(wizard-native-contract PRIVATE wizard_native)
   add_test(NAME native-contract COMMAND wizard-native-contract)
   set_tests_properties(native-contract PROPERTIES TIMEOUT 30)

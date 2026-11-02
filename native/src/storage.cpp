@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wizard.hpp"
+#include "platform.hpp"
 #include <sqlite3.h>
 #include <openssl/evp.h>
 #include <array>
@@ -49,7 +50,7 @@ std::string session_id() {
 Store::Store(const std::filesystem::path& path, bool readonly) {
     if (!readonly && path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
     const int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
-    if (sqlite3_open_v2(path.u8string().c_str(), &db_, flags | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
+    if (sqlite3_open_v2(platform::utf8_path(path).c_str(), &db_, flags | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
         std::string error = db_ ? sqlite3_errmsg(db_) : "allocation failed";
         if (db_) sqlite3_close(db_);
         db_ = nullptr;

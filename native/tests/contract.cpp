@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wizard.hpp"
+#include "platform.hpp"
 #include <zmq.h>
 #include <fstream>
 #include <future>
@@ -53,6 +54,13 @@ int main() {
         try { fn(); ++passed; }
         catch (const std::exception& e) { ++failed; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
     };
+    test("UTF8 paths preserve bytes across native filesystem representations",[] {
+        Temp temp;
+        const std::string unicode="coin-\xe2\x98\x83.sqlite";
+        const auto path=temp.path/std::filesystem::u8path(unicode);
+        check(platform::utf8_path(path.filename())==unicode);
+        Store s(path); Transaction t(s); s.put("unicode",unicode); t.commit(); check(s.get("unicode")==unicode);
+    });
     test("confirmation removes only included members",[] {
         Fixture f; Transaction t(f.store);
         f.model.admission(h(10)); f.model.admission(h(11)); f.model.connect(block(1,Json::array({tx(10)}))); t.commit();

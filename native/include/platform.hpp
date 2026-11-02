@@ -10,6 +10,7 @@
 namespace wizard::platform {
 void initialize_process();
 std::filesystem::path default_datadir();
+std::string utf8_path(const std::filesystem::path& path);
 struct FileInfo { std::uint64_t device, inode, size; };
 class CaptureFile {
     std::intptr_t handle_ = -1;

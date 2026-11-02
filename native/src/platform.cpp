@@ -52,6 +52,10 @@ WriterLock::~WriterLock() {
 } // namespace wizard
 
 namespace wizard::platform {
+std::string utf8_path(const std::filesystem::path& path) {
+    const auto bytes=path.u8string();
+    return std::string(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+}
 void initialize_process() {
 #ifdef _WIN32
     _umask(0); // Windows access control is inherited from the containing directory.

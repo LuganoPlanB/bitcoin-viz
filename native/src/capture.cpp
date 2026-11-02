@@ -67,7 +67,7 @@ std::size_t CaptureReader::poll() {
         platform::CaptureFile file(path);
         if (!file.valid()) continue;
         auto stat=file.info();
-        const auto key="capture:"+hash256(std::filesystem::canonical(path).u8string());
+        const auto key="capture:"+hash256(platform::utf8_path(std::filesystem::canonical(path)));
         auto previous=s_.get(key,Json::object());
         auto offset=previous.value("offset",std::uint64_t(0));
         const Json identity=Json::array({stat.device,stat.inode});
@@ -98,7 +98,7 @@ std::size_t CaptureReader::poll() {
             if (timestamp>std::uint64_t(std::numeric_limits<std::int64_t>::max()/1000)) {
                 partial(key,previous,path,"invalid-capture-timestamp"); break;
             }
-            const auto peer="capture-"+text(s_.get("node_run"))+"-"+component(path.parent_path().filename().u8string())+"-"+std::to_string(stat.inode);
+            const auto peer="capture-"+text(s_.get("node_run"))+"-"+component(platform::utf8_path(path.parent_path().filename()))+"-"+std::to_string(stat.inode);
             model_.message(peer,path.filename()=="msgs_recv.dat" ? "incoming" : "outgoing",command,static_cast<std::int64_t>(size),
                            "message-capture",timestamp*1000,objects);
             offset+=24+size; --remaining;
