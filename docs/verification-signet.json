@@ -1,0 +1,37 @@
+{
+  "network": "signet",
+  "core_version": 320100,
+  "applied_tip": {
+    "hash": "0000003a189d0a6ad06c8bec6e99a0638e7b3d92c5e1879dd1e996af21bd35ff",
+    "height": 231914
+  },
+  "initialblockdownload": true,
+  "zmq": "ipc:///home/gestalt-dyne/gestalt/dowse-workspace/bitcoin-wizard-cave/.runtime/socket/sequence.sock",
+  "notifications": [
+    {
+      "label": "D",
+      "hash": "0000003a189d0a6ad06c8bec6e99a0638e7b3d92c5e1879dd1e996af21bd35ff",
+      "counter": 0
+    },
+    {
+      "label": "C",
+      "hash": "0000003a189d0a6ad06c8bec6e99a0638e7b3d92c5e1879dd1e996af21bd35ff",
+      "counter": 536
+    }
+  ],
+  "notification_counts": {
+    "A": 535,
+    "R": 0,
+    "C": 1,
+    "D": 1
+  },
+  "coin_digest": "402115f649d73d1e86df75d244bd56142bf7acba2776fbbe21f6036bd6b9affb",
+  "tracked_coins": 6260,
+  "gettxout_spot_checks": 20,
+  "captured_messages": 400,
+  "rendered_leaves": {
+    "state": 2,
+    "protocol": 26,
+    "utxo": 5000
+  }
+}
