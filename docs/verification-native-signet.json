@@ -1,0 +1,31 @@
+{
+  "applied_tip": {
+    "hash": "0000003a189d0a6ad06c8bec6e99a0638e7b3d92c5e1879dd1e996af21bd35ff",
+    "height": 231914
+  },
+  "binary": "/home/gestalt-dyne/gestalt/dowse-workspace/bitcoin-wizard-cave/build/release/bitcoin-wizard-cave-native",
+  "coin_digest": "402115f649d73d1e86df75d244bd56142bf7acba2776fbbe21f6036bd6b9affb",
+  "core_version": 320100,
+  "gettxout_spot_checks": 20,
+  "implementation": "standalone C++17",
+  "initialblockdownload": true,
+  "journal_counts": {
+    "chain.connect": 3,
+    "chain.disconnect": 1,
+    "mempool.add": 535,
+    "mempool.remove": 535,
+    "observer.rebuild": 1,
+    "observer.resync": 3,
+    "observer.session": 1,
+    "observer.stopped": 1,
+    "utxo.create": 9730,
+    "utxo.spend": 1044,
+    "utxo.undo-creation": 2919,
+    "utxo.undo-restore": 493
+  },
+  "native_read_python_db": true,
+  "network": "signet",
+  "readmitted_transactions": 535,
+  "tracked_coins": 6260,
+  "zmq_chain_reconciliation": true
+}

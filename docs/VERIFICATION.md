@@ -1,5 +1,8 @@
 # Verification — 2 November 2026
 
+The later C++17 implementation and dual-language checks are documented in
+[native verification](NATIVE.md). This page records the original Python delivery.
+
 Implemented and exercised on Linux x86_64, Python 3.13, pyzmq 27.1.0,
 SQLite, Bitcoin Core 32.1.0 (`version=320100`) and Gource 0.54.
 

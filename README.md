@@ -5,6 +5,10 @@ visualization. It connects to Core's **ZMQ sequence publisher over a Unix-domain
 socket**, uses **local cookie-authenticated RPC**, and feeds **Gource through stdin**.
 Signet is the default. Bitcoin Core and Gource do not need patches.
 
+Two independent implementations live here: **C++17 with CMake** and **Python**.
+Both implement all three modes and use the same version-1 SQLite state/journal.
+The native executable runs directly against Core and Gource.
+
 Recorded signet previews: [working state](docs/previews/state.mp4),
 [protocol](docs/previews/protocol.mp4), [UTXO window](docs/previews/utxo.mp4).
 The [verification notes](docs/VERIFICATION.md) explain their coverage.
@@ -21,9 +25,41 @@ block updates, and three independent projections. SQLite commits state, undo
 patches and presentation actions together. A renderer reads through a separate
 connection/process, so a slow Gource cannot block collection.
 
-## Install and try it
+## Build and run C++
 
-Requires Python 3.11+, `pyzmq`, and Gource. No C build is needed.
+Requires CMake 3.20+, a C++17 compiler, libzmq 4.3+, SQLite 3.24+, libcurl 7.68+
+and OpenSSL Crypto development files. The pinned JSON header is included under
+`native/third_party`, with its MIT license. CMake does not download dependencies.
+On Debian/Ubuntu, the development package names are `libzmq3-dev`,
+`libsqlite3-dev`, `libcurl4-openssl-dev` and `libssl-dev`; the presets use Ninja.
+
+```sh
+cmake --preset release
+cmake --build --preset release --parallel 2
+ctest --preset release
+```
+
+Start a signet Core using the setup below, then:
+
+```sh
+build/release/bitcoin-wizard-cave-native live --datadir "$PWD/.runtime/signet" --mode state |
+  gource --log-format custom --realtime --disable-auto-skip --file-idle-time 0 -
+```
+
+Use `--mode protocol` or `--mode utxo` for the other modes. The native CLI has
+`observe`, `live`, `render`, `status`, `events` and `demo`, with the same options
+as Python, plus a controlled JSONL `replay` command. Its collector, renderer,
+ZMQ receiver, RPC client and capture reader are all C++. Python is optional for
+the parity/integration test drivers and the convenience Core/preview scripts.
+
+Either renderer can read the other collector's database. Switch collectors by
+stopping the current writer first; both respect the same writer lock.
+See [native build, architecture and verification](docs/NATIVE.md), including the
+sanitizer preset and optional `cmake --install` command.
+
+## Install Python and set up signet
+
+The Python implementation requires Python 3.11+, `pyzmq`, and Gource.
 
 ```sh
 cd bitcoin-wizard-cave
