@@ -78,7 +78,8 @@ foreach(platform linux macos windows)
   endforeach()
 endforeach()
 reject_script(collect -DVERSION=1.2.3 -DCOMMIT=0000000 "-DDIRECTORY=${assets}")
-command("${CMAKE_COMMAND}" "-DSOURCE_DIR=${source}" -DVERSION=1.2.3 "-DCOMMIT=${commit}" "-DDIRECTORY=${assets}"
+file(RELATIVE_PATH relative_assets "${source}" "${assets}")
+command("${CMAKE_COMMAND}" "-DSOURCE_DIR=${source}" -DVERSION=1.2.3 "-DCOMMIT=${commit}" "-DDIRECTORY=${relative_assets}"
   -P "${root}/ci/release/collect.cmake")
 file(STRINGS "${assets}/SHA256SUMS" sums)
 list(LENGTH sums count)
