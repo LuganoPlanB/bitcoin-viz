@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include "platform.hpp"
 #include <algorithm>
 #include <cerrno>
@@ -22,7 +22,7 @@
 #include <unistd.h>
 #endif
 
-namespace wizard {
+namespace bitcoin_viz {
 WriterLock::WriterLock(const std::filesystem::path& database) {
     if (database.has_parent_path()) std::filesystem::create_directories(database.parent_path());
     auto path=database; path+=".writer.lock";
@@ -49,9 +49,9 @@ WriterLock::~WriterLock() {
     ::close(static_cast<int>(handle_));
 #endif
 }
-} // namespace wizard
+} // namespace bitcoin_viz
 
-namespace wizard::platform {
+namespace bitcoin_viz::platform {
 std::string utf8_path(const std::filesystem::path& path) {
     const auto bytes=path.u8string();
     return std::string(reinterpret_cast<const char*>(bytes.data()),bytes.size());
@@ -200,4 +200,4 @@ void Output::write(const std::string& line) {
         offset+=static_cast<std::size_t>(n);
     }
 }
-} // namespace wizard::platform
+} // namespace bitcoin_viz::platform

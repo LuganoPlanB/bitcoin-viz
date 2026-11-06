@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include "platform.hpp"
 #include <sqlite3.h>
 #include <openssl/evp.h>
@@ -11,7 +11,7 @@
 #include <random>
 #include <sstream>
 
-namespace wizard {
+namespace bitcoin_viz {
 std::int64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -30,7 +30,7 @@ std::string component(const std::string& input) {
     std::string clean;
     for (char raw : input) {
         const auto c = static_cast<unsigned char>(raw);
-        if ((c & 0xc0U) == 0x80U) continue; // One replacement per UTF-8 codepoint, like Python's regex.
+        if ((c & 0xc0U) == 0x80U) continue; // One replacement per UTF-8 codepoint.
         if (clean.size() == 96) break;
         const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9') || c == '_' || c == '.' || c == ':' || c == '-';
@@ -150,7 +150,7 @@ void Store::leaf(const std::string& mode, const std::string& path, const std::st
         if (old.empty()) return;
         exec("DELETE FROM leaves WHERE mode=? AND path=?", {mode, path}); action = "D";
     } else {
-        // Compare JSON semantically: Python's encoder uses different whitespace/Unicode escapes.
+        // Compare JSON semantically across whitespace and Unicode escape spellings.
         if (!old.empty() && Json::parse(old[0][0].get<std::string>()) == data && !pulse) return;
         action = old.empty() ? "A" : "M";
         exec("INSERT OR REPLACE INTO leaves VALUES(?,?,?,?,?)", {mode, path, actor, color, data.dump()});
@@ -174,4 +174,4 @@ Transaction::Transaction(Store& store, bool write) : store_(store) { store_.sql(
 Transaction::~Transaction() { if (!done_) { try { store_.sql("ROLLBACK"); } catch (...) {} } }
 void Transaction::commit() { store_.sql("COMMIT"); done_ = true; }
 
-} // namespace wizard
+} // namespace bitcoin_viz

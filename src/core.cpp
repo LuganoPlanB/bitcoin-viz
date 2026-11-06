@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include <curl/curl.h>
 #include <zmq.h>
 #include <fstream>
@@ -8,7 +8,7 @@
 #include <regex>
 #include <sstream>
 
-namespace wizard {
+namespace bitcoin_viz {
 namespace {
 // Public SAX interface preserves RPC decimal lexemes as strings. Integer IDs,
 // counters and heights stay exact integers, including uint64 mempool sequences.
@@ -218,4 +218,4 @@ void SequenceFeed::receive() {
     if (socket) zmq_close(socket);
     if (context) zmq_ctx_term(context);
 }
-} // namespace wizard
+} // namespace bitcoin_viz

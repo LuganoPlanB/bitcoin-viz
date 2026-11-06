@@ -3,7 +3,7 @@
   "cmakeMinimumRequired": {"major": 3, "minor": 20, "patch": 0},
   "configurePresets": [
     {"name": "release", "generator": "Ninja", "binaryDir": "${sourceDir}/build/release", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
-    {"name": "sanitize", "generator": "Ninja", "binaryDir": "${sourceDir}/build/sanitize", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "BWC_SANITIZE": "ON"}}
+    {"name": "sanitize", "generator": "Ninja", "binaryDir": "${sourceDir}/build/sanitize", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "BITCOIN_VIZ_SANITIZE": "ON"}}
   ],
   "buildPresets": [{"name": "release", "configurePreset": "release"}, {"name": "sanitize", "configurePreset": "sanitize"}],
   "testPresets": [{"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}}, {"name": "sanitize", "configurePreset": "sanitize", "output": {"outputOnFailure": true}}]

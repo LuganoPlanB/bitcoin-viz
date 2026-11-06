@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include <algorithm>
 #include <iostream>
 #include <sstream>
 
-namespace wizard {
+namespace bitcoin_viz {
 Renderer::Renderer(const std::filesystem::path& database, std::string mode,
                    std::function<void(const std::string&)> output, std::size_t max_visible)
     : s_(database,true), mode_(std::move(mode)), output_(std::move(output)), max_visible_(max_visible) {
@@ -40,7 +40,7 @@ void Renderer::snapshot() {
     visible_.clear();
     for (const auto& row : rows) { line(stamp,"node:snapshot","A",row[0],row[2]); visible_.insert(row[0]); }
     cursor_ = cursor;
-    std::cerr << "bitcoin-wizard-cave-native: mode=" << mode_ << " visible=" << visible_.size() << '/' << total
+    std::cerr << "bitcoin-viz: mode=" << mode_ << " visible=" << visible_.size() << '/' << total
               << "; UTXO creation-height boundary=" << coverage << '\n';
 }
 std::size_t Renderer::step() {
@@ -72,7 +72,7 @@ std::size_t Renderer::step() {
 void Renderer::run(const std::function<bool()>& stopped, bool follow) {
     snapshot();
     while (follow && !stopped()) if (!step()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    std::cerr << "bitcoin-wizard-cave-native: renderer suppressed " << suppressed_ << " additions at visible limit\n";
+    std::cerr << "bitcoin-viz: renderer suppressed " << suppressed_ << " additions at visible limit\n";
 }
 Json status(Store& store) {
     Transaction tx(store,false);
@@ -88,4 +88,4 @@ Json status(Store& store) {
     result["protocol"] = "aggregate byte deltas unless capture is enabled; byte deltas are not message counts";
     tx.commit(); return result;
 }
-} // namespace wizard
+} // namespace bitcoin_viz

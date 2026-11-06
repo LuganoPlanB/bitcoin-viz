@@ -1,23 +1,17 @@
-# Bitcoin Wizard Cave
+# Bitcoin Viz
 
-A small external observer for Bitcoin Core, inspired by Dowse's ambient DNS
-visualization. It connects to Core's **ZMQ sequence publisher over a Unix-domain
-socket**, uses **local cookie-authenticated RPC**, and feeds **Gource through stdin**.
-Signet is the default. Bitcoin Core and Gource do not need patches.
+A C++17 observer for Bitcoin Core with three live Gource projections. It connects
+to Core's **ZMQ sequence publisher**, uses **local cookie-authenticated RPC**, and
+feeds **Gource through stdin**. Signet is the default. Core and Gource need no patches.
 
-Two independent implementations live here: **C++17 with CMake** and **Python**.
-Both implement all three modes and use the same version-1 SQLite state/journal.
-The native executable runs directly against Core and Gource.
+The application, model and tests are native C++; build and release automation use
+CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency in
+`third_party/`. Licensed GPL-3.0-or-later; see [LICENSE](LICENSE).
 
-[Download versioned native binaries](https://github.com/jaromil/bitcoin-wizard-cave/releases)
-for Linux x86_64/arm64, macOS Intel/Apple Silicon, and Windows x86_64.
-Linux releases use static Dyne musl builds. Each release includes SHA256 checksums,
-dependency licenses and an exact source-commit manifest.
-See [release automation](docs/RELEASING.md).
-
-Recorded signet previews: [working state](docs/previews/state.mp4),
-[protocol](docs/previews/protocol.mp4), [UTXO window](docs/previews/utxo.mp4).
-The [verification notes](docs/VERIFICATION.md) explain their coverage.
+[Source and releases](https://github.com/luganoplanb/bitcoin-viz).
+The [release workflow](docs/RELEASING.md) builds Linux x86_64/arm64, macOS
+Intel/Apple Silicon, and Windows x86_64 archives with licenses, source manifests
+and SHA256 checksums. Linux release binaries use static Dyne musl builds.
 
 | Mode | The scene shows | Sources |
 |---|---|---|
@@ -25,228 +19,168 @@ The [verification notes](docs/VERIFICATION.md) explain their coverage.
 | `protocol` | Incoming/outgoing transaction, block, discovery, control and unclassified traffic | Per-peer RPC byte deltas; optional Core message capture |
 | `utxo` | Confirmed output creation/spending, reorg undo, separate pending-spend leaves | Decoded connected blocks + mempool metadata |
 
-Compared with Dowse's direct event-to-line adapter, the observer retains stable
-object identities, a normalized journal, exact mempool reconciliation, reversible
-block updates, and three independent projections. SQLite commits state, undo
-patches and presentation actions together. A renderer reads through a separate
-connection/process, so a slow Gource cannot block collection.
+Recorded signet scenes: [state](docs/previews/state.mp4),
+[protocol](docs/previews/protocol.mp4), [UTXO window](docs/previews/utxo.mp4).
+See [verification and coverage](docs/VERIFICATION.md) for their provenance.
 
-## Build and run C++
+## Build and install
 
 Requires CMake 3.20+, a C++17 compiler, libzmq 4.3+, SQLite 3.24+, libcurl 7.68+
-and OpenSSL Crypto development files. The pinned JSON header is included under
-`native/third_party`, with its MIT license. CMake does not download dependencies.
-On Debian/Ubuntu, the development package names are `libzmq3-dev`,
-`libsqlite3-dev`, `libcurl4-openssl-dev` and `libssl-dev`; the presets use Ninja.
+and OpenSSL Crypto development files. Presets use Ninja. The nlohmann JSON
+3.12.0 header and its MIT license are vendored; CMake downloads no dependencies.
+
+On Debian/Ubuntu:
 
 ```sh
+sudo apt install build-essential cmake ninja-build pkg-config ccache \
+  libzmq3-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev
+git clone https://github.com/luganoplanb/bitcoin-viz.git
+cd bitcoin-viz
 cmake --preset release
 cmake --build --preset release --parallel 2
 ctest --preset release
+cmake --install build/release --prefix "$HOME/.local"
 ```
 
-Start a signet Core using the setup below, then:
+The executable is `build/release/bitcoin-viz`, or `bitcoin-viz` after installation
+if the chosen `bin` directory is on your PATH. CMake uses ccache when available
+unless a compiler launcher was explicitly configured.
 
-```sh
-build/release/bitcoin-wizard-cave-native live --datadir "$PWD/.runtime/signet" --mode state |
-  gource --log-format custom --realtime --disable-auto-skip --file-idle-time 0 -
-```
+## Connect to Core
 
-Use `--mode protocol` or `--mode utxo` for the other modes. The native CLI has
-`observe`, `live`, `render`, `status`, `events` and `demo`, with the same options
-as Python, plus a controlled JSONL `replay` command. Its collector, renderer,
-ZMQ receiver, RPC client and capture reader are all C++. Python is optional for
-the parity/integration test drivers and the convenience Core/preview scripts.
-
-Either renderer can read the other collector's database. Switch collectors by
-stopping the current writer first; both respect the same writer lock.
-See [native build, architecture and verification](docs/NATIVE.md), including the
-sanitizer preset and optional `cmake --install` command.
-
-## Install Python and set up signet
-
-The Python implementation requires Python 3.11+, `pyzmq`, and Gource.
-
-```sh
-cd bitcoin-wizard-cave
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-```
-
-This workspace already has `.venv/bin/bitcoin-wizard-cave` installed. On a minimal
-Debian Python without `ensurepip`, create the venv with `--without-pip` and use
-the official [pip zip application](https://pip.pypa.io/en/stable/installation/#standalone-zip-application)
-to install into it. The local `.tools/pip.pyz` was used for this environment.
-
-Download the pinned official Linux x86_64 Core binary, then start an isolated
-signet node in its own terminal:
-
-```sh
-python3 tools/core.py fetch
-python3 tools/core.py start
-```
-
-The helper uses `.runtime/signet`, bounded Core caches, pruning, loopback RPC,
-cookie authentication and `.runtime/socket/sequence.sock`. Initial synchronization
-still downloads and validates signet history. Run `python3 tools/core.py info`
-to inspect progress, and `python3 tools/core.py stop` to stop this node.
-
-In another terminal:
-
-```sh
-.venv/bin/bitcoin-wizard-cave live --datadir "$PWD/.runtime/signet" --mode state |
-  gource --log-format custom --realtime --disable-auto-skip \
-    --file-idle-time 0 --max-file-lag 0.1 --title 'Bitcoin Wizard Cave · Signet' -
-```
-
-Select `--mode protocol` or `--mode utxo` for the other views. Use a UTXO title
-such as `Bitcoin Wizard Cave · observed output window` to keep coverage visible.
-Diagnostics go to stderr; stdout contains only valid custom-log records.
-
-For an existing node, use its data directory or explicit `--cookie`, `--rpc-url`
-and `--zmq`. The observer verifies the RPC chain and fails if it is not signet.
-`--network regtest` exists only for controlled testing; mainnet is intentionally
-outside this first release's CLI.
-
-## Unix socket configuration
-
-See [examples/bitcoin.conf](examples/bitcoin.conf). With an existing Core:
+Configure a local signet node using [examples/bitcoin.conf](examples/bitcoin.conf):
 
 ```ini
 server=1
 signet=1
 [signet]
-zmqpubsequence=unix:/run/user/1000/bitcoin-vis/sequence.sock
+zmqpubsequence=unix:/run/user/1000/bitcoin-viz/sequence.sock
 ```
 
-Create the directory with suitable ownership/permissions first; `1000` is an
-example UID. The libzmq subscriber connects to
-`ipc:///run/user/1000/bitcoin-vis/sequence.sock`. Core translates `unix:` to
-`ipc://`; the CLI accepts either spelling and normally discovers the publisher
-with `getzmqnotifications`. This is binary multipart ZMQ, not a text pipe. It is
-separate from Core's multiprocess IPC. The **observer-to-Gource** connection is
-the ordinary text pipe.
+Replace `1000` with your UID and create the socket directory first, owned by the
+Core user with mode 0700. Start your installed `bitcoind -signet` using the chosen
+configuration and data directory. Initial synchronization downloads and validates
+signet history. No wallet or broadcast RPC is needed.
+
+```sh
+bitcoin-viz live --datadir "$HOME/.bitcoin" --mode state |
+  gource --log-format custom --realtime --disable-auto-skip --file-idle-time 0 \
+    --title 'Bitcoin Viz · Signet' -
+```
+
+Use `--mode protocol` or `--mode utxo` for the other views. For another data
+directory, supply `--datadir`; explicit `--cookie`, `--rpc-url` and `--zmq` are
+also available. The observer checks Core's chain. `--network regtest` supports
+controlled testing; mainnet is outside the current CLI's scope.
+
+Core translates `unix:` into libzmq `ipc://`. The CLI accepts either spelling
+and normally discovers the sequence publisher with `getzmqnotifications`.
+Windows uses a loopback publisher such as `tcp://127.0.0.1:28332`. This is binary
+multipart ZMQ, separate from Core's multiprocess IPC. The connection from the
+observer to Gource is an ordinary text pipe. Diagnostics go to stderr.
 
 ## Keep collecting while changing views
 
-Run collection independently for renderer restarts and mode switching:
+SQLite commits model state, a normalized journal, inverse patches and presentation
+actions together. A renderer uses a separate connection, so a slow Gource cannot
+block collection. For independent collector and renderer lifetimes:
 
 ```sh
-.venv/bin/bitcoin-wizard-cave observe --datadir "$PWD/.runtime/signet" --db .runtime/wizard.sqlite
-```
-
-Then, in one or more other terminals:
-
-```sh
-.venv/bin/bitcoin-wizard-cave render --db .runtime/wizard.sqlite --mode utxo |
+bitcoin-viz observe --datadir "$HOME/.bitcoin" --db .runtime/bitcoin-viz.sqlite
+# In another terminal:
+bitcoin-viz render --db .runtime/bitcoin-viz.sqlite --mode utxo |
   gource --log-format custom --realtime --disable-auto-skip --file-idle-time 0 -
 ```
 
-Each renderer quietly repopulates the current scene as `node:snapshot`, then
-follows committed actions. `render --once` exports the current scene. `live`
-combines a collector with an independent renderer thread for the convenient
-single-pipe invocation; use `observe` for a collector whose lifetime should
-survive renderer exit.
+Each renderer repopulates the current scene as `node:snapshot`, then follows
+committed actions. `render --once` exports the current scene. `live` combines
+collection with an independent renderer thread. Only one collector may write a
+database at once; the `.writer.lock` enforces this.
 
 ```sh
-.venv/bin/bitcoin-wizard-cave status --db .runtime/wizard.sqlite
-.venv/bin/bitcoin-wizard-cave events --db .runtime/wizard.sqlite --after 0 --limit 100
+bitcoin-viz status --db .runtime/bitcoin-viz.sqlite
+bitcoin-viz events --db .runtime/bitcoin-viz.sqlite --after 0 --limit 100
+bitcoin-viz --help
 ```
 
-The JSON status includes the applied tip, checkpoint, creation-height coverage,
-state and visible-leaf counts, Core version and reconciliation time. Journal
-records preserve nanosecond observation time, source counters, original causes,
-dependencies, money in integer satoshis, and source metadata. Schema version is 1.
-`events --after ID` permits incremental inspection; it does not promise a global
-causal order among independent sources.
+Status includes the applied tip, checkpoint, output-window coverage, state and
+visible-leaf counts, Core version and reconciliation time. Journal records retain
+nanosecond observation times, source counters, original causes, dependencies and
+integer satoshis. Schema version remains 1. `events --after ID` supports incremental
+inspection without promising a total causal order among independent sources.
+Existing schema-1 databases remain readable with an explicit `--db` path; the
+new default is `.runtime/bitcoin-viz.sqlite`.
 
 ## Protocol detail
 
 The default protocol view polls `bytesrecv_per_msg` and `bytessent_per_msg` every
 two seconds. These are **byte deltas, not message counts**. Initial cumulative
-counters are a baseline, not replayed traffic. `inv`/`getdata` remain unclassified
-when only their names are available. Very short peer sessions may be missed.
+counters establish a baseline. Short peer sessions may be missed; `inv` and
+`getdata` names alone do not identify transaction or block inventory.
 
-For actual message observations, start the helper with `--capture`, then run:
+For actual message observations, enable Core's optional `capturemessages=1`
+(which records full P2P payloads on disk), then:
 
 ```sh
-.venv/bin/bitcoin-wizard-cave observe --datadir "$PWD/.runtime/signet" \
-  --capture-dir "$PWD/.runtime/signet/signet/message_capture"
+bitcoin-viz observe --datadir "$HOME/.bitcoin" \
+  --capture-dir "$HOME/.bitcoin/signet/message_capture"
 ```
 
-Core's optional `-capturemessages` writes full P2P payloads to disk. The observer
-reads a bounded number of complete records each poll, journals metadata and
-selected inventory links, and persists each file cursor atomically. It suppresses
-aggregate animation to avoid double counting. Inventory parsing distinguishes
-txids, wtxids and block hashes; only known txids touch existing mempool leaves.
-Unknown content never creates a membership. Mixed inventory has its own branch.
-Partial/corrupt records, truncations and rotations are journaled as source gaps;
-the reader waits for completion rather than guessing record boundaries.
+The reader consumes bounded complete records, journals metadata and selected
+inventory links, and commits file cursors atomically. Aggregate animation is
+suppressed to avoid double counting. Inventory parsing distinguishes txids,
+wtxids and block hashes; only known txids touch existing mempool leaves.
+Unknown content never creates membership. Inventory detail is capped at 1,000
+links per message, with sampling recorded in the journal.
 
-Capture files identify an endpoint, not Core's peer ID. Their actors are labeled
-`capture-...`, include observer-run and file identity, and are not falsely joined
-to a polled connection. Existing file records are read from the beginning once,
-with original source time retained separately; a large backlog is not live
-traffic. The observer does not rotate or delete Core's capture files. Inventory
-detail is capped at 1,000 links per message and sampling is explicitly journaled.
-No eBPF privileges, trace probe installation or full transaction payload retention
-in the observer database are required.
+Capture endpoints are labeled `capture-...`, with observer-run and file identity;
+they are not falsely joined to Core peer IDs. Backlogs retain their source time
+and are not claimed to be live traffic. Partial/corrupt records, truncation and
+rotation produce source gaps. The observer does not rotate or delete capture files.
 
-## Coverage, recovery and presentation
+## Coverage and recovery
 
-- The UTXO view is **observed outputs**, not the full current UTXO set. Startup
-  anchors six blocks behind the node's current tip and applies later blocks.
-  Default `--window-blocks 144` expires older creation cohorts with
-  `view:retention` / `coverage-expiry`, never as a spend. `--window-blocks 0`
-  retains all observed surviving outputs from a fixed checkpoint and may grow.
-- Per-block inverse patches undo operations in reverse order, including outputs
-  created then spent inside the same block. `--undo-horizon 288` bounds undo
-  history. A reorg crossing that horizon/checkpoint, missing pruned content, or
-  excessive rolling-window catch-up records a rebuild and a new coverage anchor.
-- During Core's initial download the applied chain is only the node's partially
-  synchronized chain. If pruning/catch-up outruns the observer it reports gaps
-  and retries; it does not promise complete historical playback. A duration limit
-  is checked between bounded RPC/catch-up batches, so an in-flight batch may finish
-  after the requested time.
-- The subscriber buffers before the mempool snapshot. Chain-tip bracketing,
-  the snapshot's **next** mempool sequence boundary, modulo-32-bit outer counters,
-  periodic exact membership comparison and cookie refresh support recovery.
-  Inner mempool counter jumps alone do not imply transport loss.
+- The UTXO view shows **observed outputs**, not the full current UTXO set. Startup
+  anchors six blocks behind Core's tip. `--window-blocks 144` expires old creation
+  cohorts as coverage expiry, never as a spend; `0` retains surviving observed
+  outputs from a fixed checkpoint and may grow.
+- Reverse-order per-block patches support reorg undo, including outputs created
+  then spent in one block. `--undo-horizon 288` bounds undo history. Crossing the
+  checkpoint/horizon, missing pruned content or excessive catch-up rebuilds the
+  observed window and reports a new coverage anchor.
+- During initial download the applied chain is Core's partially synchronized
+  chain. Duration limits are checked between bounded RPC/catch-up batches.
+- Buffering before snapshots, chain-tip bracketing, the snapshot's next mempool
+  sequence boundary, wrapping outer counters, exact membership comparisons and
+  cookie refresh support recovery. Inner counter jumps alone do not imply loss.
 - Confirmations remove included mempool memberships. Disconnected transactions
-  reappear only after actual admissions or reconciliation. ZMQ removals without
-  reasons remain `unknown-removal`; replacements are never inferred from timing.
-- Fee bands use base satoshis divided by `vsize_bip141`, or `ceil(weight/4)` when
-  available. Ambiguous legacy `vsize` alone leaves the band unknown. Metadata
-  collection is bounded and cannot resurrect removed membership.
-- `--max-visible 5000` caps each Gource scene, leaving model state intact. The
-  renderer prints visible/total and suppressed counts. It is a capped subset,
-  not a representative sample; hidden leaves are not automatically backfilled.
-  Restart the renderer for a fresh selection. Dense full-chainstate rendering is
-  not an aim of stock Gource.
-- `--journal-keep 100000` limits retained normalized event rows after successful
-  reconciliations. Actions and disk bytes can exceed that count, especially while
-  catching up. Lagging renderers repopulate from current state after pruning.
-  SQLite reuses freed pages; no automatic database vacuum is performed.
-- Gource's stock format approximates path moves with D/A. It cannot show graph
-  edges, selection details, coordinated confirmation or distinct undo animations.
-  These remain available as data/causes in the journal for a future renderer.
-  Optional complete-current-set snapshot import and Gource patches are not included.
+  return only after admissions or reconciliation. Removal reasons remain unknown
+  when the source cannot supply them; timing does not establish replacement.
+- Fee bands use base satoshis divided by `vsize_bip141`, or `ceil(weight/4)`.
+  Ambiguous legacy `vsize` leaves the band unknown. Bounded metadata work cannot
+  resurrect removed memberships.
+- `--max-visible 5000` caps each scene while preserving model state. It is a
+  capped subset rather than a representative sample. Restart to refresh selection.
+- `--journal-keep 100000` bounds retained event rows after reconciliation; actions
+  and disk bytes can exceed that count. Lagging renderers repopulate after pruning.
+  SQLite reuses pages without automatically vacuuming.
+- Stock Gource approximates moves with D/A and cannot show graph edges, selection
+  detail or distinct undo animations. Full-current-set import and custom Gource
+  patches are not included. No mainnet-scale performance claim is made.
 
-## Tests and a node-free preview
+## Node-free demo and checks
 
 ```sh
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/bitcoin-wizard-cave demo --db .runtime/demo.sqlite --mode state |
+bitcoin-viz demo --db .runtime/new-demo.sqlite --mode state |
   gource --log-format custom --file-idle-time 0 --stop-at-end -
+bitcoin-viz render --db .runtime/new-demo.sqlite --once --mode protocol
 ```
 
-`demo` requires a new database and labels it `SYNTHETIC-DEMO`; it never contacts
-Core. Reuse that database with `render --once --mode protocol` or `--mode utxo`.
-See [verification evidence and limitations](docs/VERIFICATION.md).
+`demo` requires a new database, labels it `SYNTHETIC-DEMO` and never contacts Core.
+`replay` applies controlled JSONL model operations to a new database.
+See [architecture](docs/ARCHITECTURE.md) and [verification](docs/VERIFICATION.md),
+including the sanitizer preset.
 
-Design sources: the workspace's
-`Gource_Bitcoin_Node_Visualization_and_Live_Integration.md` and
+The ambient-visualization approach was inspired by
 [`dyne/dowse`, `src/dowse-to-gource.c`](https://github.com/dyne/dowse/blob/6057a415933098ee3cd1cce4746790b9ca0fff63/src/dowse-to-gource.c).
-The checked-out Dowse `main` branch did not contain the adapter; it was studied
-from local `origin/master` at that revision. This is a new implementation, not a
-copy of its C code. Licensed GPL-3.0-or-later; see [LICENSE](LICENSE).
+This is an independent implementation.

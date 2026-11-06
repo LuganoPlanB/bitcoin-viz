@@ -20,7 +20,7 @@
 
 struct sqlite3;
 
-namespace wizard {
+namespace bitcoin_viz {
 using Json = nlohmann::json;
 using Params = std::vector<Json>;
 using Rows = std::vector<std::vector<Json>>;
@@ -190,7 +190,7 @@ public:
 
 struct Options {
     std::string command, mode = "state", network = "signet", rpc_url, zmq;
-    std::filesystem::path database = ".runtime/wizard.sqlite", datadir, cookie, capture_dir, input;
+    std::filesystem::path database = ".runtime/bitcoin-viz.sqlite", datadir, cookie, capture_dir, input;
     std::int64_t window = 144, horizon = 288, bootstrap = 6, metadata_budget = 32, journal_keep = 100000;
     std::size_t max_visible = 5000;
     std::int64_t after = 0, limit = 100;
@@ -223,4 +223,4 @@ public:
 Json status(Store& store);
 void demo(Store& store);
 void replay(Store& store, const std::filesystem::path& input);
-} // namespace wizard
+} // namespace bitcoin_viz

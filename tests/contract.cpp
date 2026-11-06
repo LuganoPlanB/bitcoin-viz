@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include "platform.hpp"
 #include <zmq.h>
 #include <fstream>
@@ -8,7 +8,7 @@
 #include <limits>
 #include <sstream>
 
-using namespace wizard;
+using namespace bitcoin_viz;
 namespace {
 void check(bool condition, const std::string& message="Contract failed") { if (!condition) throw std::runtime_error(message); }
 template<class F> void rejects(F fn, const std::string& message="Expected rejection") {
@@ -26,7 +26,7 @@ Json block(int height, Json transactions=Json::array()) {
     return {{"hash",h(static_cast<unsigned int>(height))},{"height",height},{"previousblockhash",h(static_cast<unsigned int>(height-1))},{"time",123},{"tx",transactions}};
 }
 struct Temp {
-    std::filesystem::path path=std::filesystem::temp_directory_path()/("bwc-"+session_id());
+    std::filesystem::path path=std::filesystem::temp_directory_path()/("bitcoin-viz-"+session_id());
     Temp() { std::filesystem::create_directory(path); }
     ~Temp() { std::error_code error; std::filesystem::remove_all(path,error); }
 };
@@ -258,12 +258,18 @@ int main() {
         std::string address="tcp://127.0.0.1:*";
 #else
         std::string address="ipc://"+(temp.path/"sequence.sock").string();
+        // Deep session temp directories can exceed sockaddr_un's path capacity.
+        if ((temp.path/"sequence.sock").string().size()>=100) address="tcp://127.0.0.1:*";
 #endif
         void* context=zmq_ctx_new(); check(context!=nullptr);
         void* publisher=zmq_socket(context,ZMQ_PUB);
         if (!publisher) { zmq_ctx_term(context); throw std::runtime_error("publisher allocation failed"); }
         int linger=0; zmq_setsockopt(publisher,ZMQ_LINGER,&linger,sizeof(linger));
-        if (zmq_bind(publisher,address.c_str())) { zmq_close(publisher); zmq_ctx_term(context); throw std::runtime_error("publisher bind failed"); }
+        if (zmq_bind(publisher,address.c_str())) {
+            const std::string error=zmq_strerror(zmq_errno());
+            zmq_close(publisher); zmq_ctx_term(context);
+            throw std::runtime_error("publisher bind failed: "+error+" ("+address+")");
+        }
         char resolved[256]{}; std::size_t length=sizeof(resolved);
         if (zmq_getsockopt(publisher,ZMQ_LAST_ENDPOINT,resolved,&length)) { zmq_close(publisher); zmq_ctx_term(context); throw std::runtime_error("publisher address unavailable"); }
         address=resolved;
@@ -275,7 +281,7 @@ int main() {
             auto until=Clock::now()+std::chrono::seconds(2);
             while (Clock::now()<until) { if (auto e=feed.pop()) { found=e->hash==h(0) && e->label=='C' && e->counter==7; break; } std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
         } catch (...) { zmq_close(publisher); zmq_ctx_term(context); throw; }
-        zmq_close(publisher); zmq_ctx_term(context); check(found,"No real IPC notification received");
+        zmq_close(publisher); zmq_ctx_term(context); check(found,"No real multipart notification received");
     });
     std::cout << "Native contracts: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

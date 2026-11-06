@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <sstream>
 
-namespace wizard {
+namespace bitcoin_viz {
 namespace {
 std::string replace_colon(std::string s) { std::replace(s.begin(), s.end(), ':', '-'); return s; }
 std::string cohort(std::int64_t h) { const auto base = h / 100 * 100; return std::to_string(base) + "-" + std::to_string(base + 99); }
@@ -327,4 +327,4 @@ void Model::message(const std::string& peer, const std::string& direction, const
         }
     }
 }
-} // namespace wizard
+} // namespace bitcoin_viz

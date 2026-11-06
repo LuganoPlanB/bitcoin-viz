@@ -1,13 +1,9 @@
-.venv/
 .tools/
 .runtime/
-__pycache__/
-*.egg-info/
 build/
 dist/
 *.sqlite*
 docs/previews/*.stderr
-docs/native-previews/*.stderr
 CMakeUserPresets.json
 .release/
 .cache/

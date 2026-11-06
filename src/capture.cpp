@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include "platform.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <limits>
 
-namespace wizard {
+namespace bitcoin_viz {
 namespace {
 std::uint64_t le(const std::string& bytes, std::size_t offset, std::size_t count) {
     std::uint64_t value = 0;
@@ -108,4 +108,4 @@ std::size_t CaptureReader::poll() {
     }
     return budget_-remaining;
 }
-} // namespace wizard
+} // namespace bitcoin_viz

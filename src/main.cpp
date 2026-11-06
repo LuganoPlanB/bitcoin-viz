@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include "platform.hpp"
-#include "wizard_version.hpp"
+#include "bitcoin_viz_version.hpp"
 #include <cerrno>
 #include <cmath>
 #include <csignal>
@@ -15,8 +15,8 @@ namespace {
 std::atomic<bool> interrupted{false};
 static_assert(std::atomic<bool>::is_always_lock_free,"Signal stop flag must be lock free");
 void signal_stop(int) { interrupted.store(true,std::memory_order_relaxed); }
-using wizard::platform::Output;
-using wizard::platform::OutputClosed;
+using bitcoin_viz::platform::Output;
+using bitcoin_viz::platform::OutputClosed;
 std::int64_t integer(const std::string& value, bool positive=false) {
     if (value.empty() || value[0]=='-') throw std::runtime_error("Expected nonnegative integer");
     std::size_t used=0;
@@ -31,9 +31,9 @@ double duration(const std::string& value) {
     return n;
 }
 void help() {
-    std::cout << "Bitcoin Wizard Cave native " BWC_VERSION " (C++17)\n"
-      "Usage: bitcoin-wizard-cave-native <observe|live|render|status|events|demo|replay> [options]\n"
-      "  --db PATH                     SQLite database (default .runtime/wizard.sqlite)\n"
+    std::cout << "Bitcoin Viz " BITCOIN_VIZ_VERSION " (C++17)\n"
+      "Usage: bitcoin-viz <observe|live|render|status|events|demo|replay> [options]\n"
+      "  --db PATH                     SQLite database (default .runtime/bitcoin-viz.sqlite)\n"
       "  --mode state|protocol|utxo     Gource projection (default state)\n"
       "  --max-visible N               Cap renderer only (default 5000)\n"
       "  --network signet|regtest       Expected Core chain (default signet)\n"
@@ -44,8 +44,8 @@ void help() {
       "  render: --once; events: --after ID --limit N; replay: --input FILE.jsonl\n"
       "Signet, local cookie RPC and the sequence publisher are the defaults.\n";
 }
-wizard::Options options(int argc, char** argv) {
-    using namespace wizard;
+bitcoin_viz::Options options(int argc, char** argv) {
+    using namespace bitcoin_viz;
     Options o;
     o.datadir=platform::default_datadir();
     if (argc<2) throw std::runtime_error("Missing command; use --help");
@@ -91,7 +91,7 @@ wizard::Options options(int argc, char** argv) {
 }
 }
 
-namespace wizard {
+namespace bitcoin_viz {
 namespace {
 std::string hash_id(unsigned int n) { std::ostringstream out; out << std::hex; out.width(64); out.fill('0'); out << n; return out.str(); }
 }
@@ -144,10 +144,10 @@ void replay(Store& s, const std::filesystem::path& input) {
     }
     if (stream.bad()) throw std::runtime_error("Replay input read failed");
 }
-} // namespace wizard
+} // namespace bitcoin_viz
 
 int main(int argc, char** argv) {
-    using namespace wizard;
+    using namespace bitcoin_viz;
     platform::initialize_process();
 #ifndef _WIN32
     std::signal(SIGPIPE,SIG_IGN);
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT,signal_stop); std::signal(SIGTERM,signal_stop);
     try {
         if (argc==2 && (std::string(argv[1])=="--help" || std::string(argv[1])=="-h")) { help(); return 0; }
-        if (argc==2 && std::string(argv[1])=="--version") { std::cout << BWC_VERSION " (native C++17)\n"; return 0; }
+        if (argc==2 && std::string(argv[1])=="--version") { std::cout << BITCOIN_VIZ_VERSION " (C++17)\n"; return 0; }
         const auto o=options(argc,argv);
         std::atomic<bool> stop{false};
         const auto stopped=[&] { return stop.load() || interrupted.load(std::memory_order_relaxed); };
@@ -202,5 +202,5 @@ int main(int argc, char** argv) {
         if (render_error) std::rethrow_exception(render_error);
         return 0;
     } catch (const OutputClosed&) { return 0; }
-    catch (const std::exception& e) { std::cerr << "bitcoin-wizard-cave-native: " << e.what() << '\n'; return 1; }
+    catch (const std::exception& e) { std::cerr << "bitcoin-viz: " << e.what() << '\n'; return 1; }
 }

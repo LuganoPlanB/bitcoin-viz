@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "wizard.hpp"
+#include "bitcoin_viz.hpp"
 #include <algorithm>
 #include <iostream>
 #include <limits>
 
-namespace wizard {
+namespace bitcoin_viz {
 namespace {
 bool wait_stop(const std::function<bool()>& stopped, double seconds) {
     const auto end = Clock::now() + std::chrono::duration<double>(seconds);
@@ -140,7 +140,7 @@ void Observer::run(const std::function<bool()>& stopped) {
     feed_->start();
     const auto started = Clock::now();
     auto next_peer = started, next_reconcile = started, next_metadata = started;
-    std::cerr << "bitcoin-wizard-cave-native: " << options_.network << ", Core " << s_.get("core_version") << ", ZMQ " << options_.zmq << '\n';
+    std::cerr << "bitcoin-viz: " << options_.network << ", Core " << s_.get("core_version") << ", ZMQ " << options_.zmq << '\n';
     try {
         while (!stopped() && (options_.duration == 0 || std::chrono::duration<double>(Clock::now()-started).count() < options_.duration)) {
             const auto now = Clock::now();
@@ -169,7 +169,7 @@ void Observer::run(const std::function<bool()>& stopped) {
             } catch (const std::exception& e) {
                 rpc_.close();
                 { Transaction tx(s_); s_.put("synchronized",false); s_.event("observer.source-loss","node:observer","rpc-or-chain-gap",{{"error",e.what()}}); s_.prune(options_.journal_keep); tx.commit(); }
-                std::cerr << "bitcoin-wizard-cave-native: recovery needed: " << e.what() << '\n';
+                std::cerr << "bitcoin-viz: recovery needed: " << e.what() << '\n';
                 next_reconcile = Clock::time_point::min();
                 wait_stop(stopped,std::min(2.0,options_.peer_interval));
             }
@@ -183,4 +183,4 @@ void Observer::run(const std::function<bool()>& stopped) {
     feed_.reset(); rpc_.close();
     Transaction tx(s_); s_.put("synchronized",false); s_.event("observer.stopped","node:observer","collector-exit"); tx.commit();
 }
-} // namespace wizard
+} // namespace bitcoin_viz

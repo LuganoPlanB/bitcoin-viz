@@ -1,5 +1,5 @@
 {
-  "name": "bitcoin-wizard-cave",
+  "name": "bitcoin-viz",
   "version-string": "release-dependencies",
   "builtin-baseline": "80aae04504a834399456d74605204bfe514762bf",
   "dependencies": [

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace wizard::platform {
+namespace bitcoin_viz::platform {
 void initialize_process();
 std::filesystem::path default_datadir();
 std::string utf8_path(const std::filesystem::path& path);
@@ -34,4 +34,4 @@ public:
     Output& operator=(const Output&) = delete;
     void write(const std::string& line);
 };
-} // namespace wizard::platform
+} // namespace bitcoin_viz::platform
