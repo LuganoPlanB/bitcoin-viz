@@ -230,7 +230,9 @@ void Model::connect(const Json& block) {
     }
     s_.exec("INSERT INTO blocks VALUES(?,?,?,?,?)",{hash,height,tip.at("hash"),undo.dump(),previous});
     auto e = s_.event("chain.connect","node:chain","connection",{{"blockhash",hash},{"height",height},
-        {"header_time",block.value("time",Json(nullptr))},{"outside_window_inputs",untracked}});
+        {"header_time",block.value("time",Json(nullptr))},{"outside_window_inputs",untracked},
+        {"transactions",block.at("tx").size()},{"size_bytes",block.value("size",Json(nullptr))},
+        {"weight",block.value("weight",Json(nullptr))}});
     s_.leaf("state",block_path(height,hash),"node:chain","7EA6E0",{{"height",height}},e);
     s_.leaf("state",block_path(height,hash,"disconnected"),"node:chain","DE7777",Json::object(),e,true);
     trim_chain(height);

@@ -13,6 +13,7 @@ neither a language interpreter nor `bitcoin-cli`.
 | `observer.cpp` | Bootstrap, snapshots, catch-up, recovery and bounded metadata work |
 | `capture.cpp` | Capture framing, selected inventory links, offsets and source gaps |
 | `render.cpp` | Current-scene bootstrap and committed-action reading with presentation caps |
+| `logstalgia.cpp` | Event-journal flows, source fidelity, byte sizes, cursor following and retention gaps |
 | `main.cpp` | CLI, signals, output/thread lifetime, synthetic demo and replay |
 | `platform.cpp` | POSIX/Win32 locks, positioned reads, interruptible output and Core defaults |
 
@@ -36,6 +37,13 @@ Capture reads are bounded and fair across files. Large payloads are skipped when
 only metadata is needed. Inventory links cap at 1,000 with explicit sampling.
 Endpoint identities remain distinct from polled peer IDs. Incomplete or corrupt
 records produce gaps rather than guessed messages.
+
+Logstalgia reads normalized events rather than Gource's actions. Its default
+cursor starts at the journal head; explicit cursors resume and finite exports
+fix an upper boundary. Each batch reads pruning metadata and events in one SQLite
+snapshot and releases it before output. Pruning produces a visible gap rather
+than a state snapshot presented as recent traffic. See [Logstalgia](LOGSTALGIA.md)
+for field mappings, event semantics and suggested future views.
 
 ## Controlled replay
 

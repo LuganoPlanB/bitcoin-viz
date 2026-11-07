@@ -34,7 +34,7 @@ endif()
 
 add_library(bitcoin_viz_core STATIC
   src/storage.cpp src/model.cpp src/core.cpp src/observer.cpp
-  src/render.cpp src/capture.cpp src/platform.cpp)
+  src/render.cpp src/logstalgia.cpp src/capture.cpp src/platform.cpp)
 target_compile_features(bitcoin_viz_core PUBLIC cxx_std_17)
 set_target_properties(bitcoin_viz_core PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_include_directories(bitcoin_viz_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")

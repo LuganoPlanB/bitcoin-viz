@@ -47,6 +47,17 @@ std::string capture_record(const std::string& command, const std::string& payloa
     auto name=command; name.resize(12,'\0');
     return bytes_le(123456789,8)+name+bytes_le(payload.size(),4)+payload;
 }
+std::vector<std::string> log_fields(std::string line) {
+    check(!line.empty() && line.back()=='\n',"Logstalgia record must end with newline");
+    line.pop_back();
+    check(line.find_first_of("\n\r")==std::string::npos,"Injected record delimiter");
+    std::istringstream input(line);
+    std::vector<std::string> result;
+    std::string part;
+    while (std::getline(input,part,'|')) result.push_back(part);
+    check(result.size()==11,"Expected eleven Logstalgia custom fields");
+    return result;
+}
 }
 int main() {
     int passed=0,failed=0;
@@ -282,6 +293,135 @@ int main() {
             while (Clock::now()<until) { if (auto e=feed.pop()) { found=e->hash==h(0) && e->label=='C' && e->counter==7; break; } std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
         } catch (...) { zmq_close(publisher); zmq_ctx_term(context); throw; }
         zmq_close(publisher); zmq_ctx_term(context); check(found,"No real multipart notification received");
+    });
+    test("Logstalgia distinguishes aggregate bytes and captured messages",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store);
+          f.model.message("one","incoming","tx",1234,"aggregate-bytes");
+          f.model.message("two","outgoing","ping",8,"message-capture",123456789);
+          t.commit(); }
+        check(r.step()==2 && lines.size()==2);
+        const auto a=log_fields(lines[0]), b=log_fields(lines[1]);
+        check(a[2]=="/traffic/aggregate-bytes/incoming/tx" && a[3]=="RX" && a[4]=="1234");
+        check(b[2]=="/traffic/message-capture/outgoing/ping" && b[3]=="TX" && b[4]=="8");
+        check(a[5]=="1" && a[6]=="6FC5D2" && b[6]=="E6AB72");
+        check(a[9]=="bitcoin-viz" && a[10]=="incoming" && b[10]=="outgoing");
+        check(b[8].find("source_observed_ns=123456789")!=std::string::npos);
+        check(r.step()==0 && lines.size()==2,"Duplicate Logstalgia activity");
+    });
+    test("Logstalgia snapshot membership is not fabricated admissions",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"mempool",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store);
+          f.model.reconcile_mempool(Json::array({h(1)}),10);
+          f.model.reconcile_mempool(Json::array(),11);
+          f.model.admission(h(2),{{"band","fee-20-plus"},{"fee_sat",999999999},{"vsize_bip141",100}});
+          f.model.enrich(h(2),{{"band","fee-5-to-20"}});
+          f.model.removal(h(2)); t.commit(); }
+        r.step(); check(lines.size()==3);
+        check(log_fields(lines[0])[2]=="/mempool/admitted/fee-20-plus");
+        check(log_fields(lines[1])[3]=="METADATA");
+        const auto removal=log_fields(lines[2]);
+        check(removal[2]=="/mempool/removed/unknown-removal" && removal[3]=="REMOVE" && removal[5]=="1");
+        for (const auto& line : lines) check(log_fields(line)[4]=="0","Lifecycle size is unknown, not satoshis or virtual bytes");
+    });
+    test("Logstalgia blocks retain serialized bytes and distinguish reorg",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"blocks",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store); auto b=block(1,Json::array({tx(1)})); b["size"]=1234; b["weight"]=4936;
+          f.model.connect(b); f.model.disconnect(h(1)); t.commit(); }
+        r.step(); check(lines.size()==2);
+        const auto a=log_fields(lines[0]), b=log_fields(lines[1]);
+        check(a[2]=="/chain/connected/1" && a[3]=="BLOCK" && a[4]=="1234" && a[5]=="1");
+        check(a[8].find("transactions=1")!=std::string::npos);
+        check(b[2]=="/chain/disconnected/1" && b[3]=="REORG" && b[4]=="0" && b[5]=="0");
+    });
+    test("Logstalgia output lanes distinguish spends undo and coverage expiry",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"utxo",[&](const std::string& line) { lines.push_back(line); });
+        const Json coin{{"script","5120"+std::string(64,'a')},{"value_sat",5000000000LL}};
+        { Transaction t(f.store);
+          f.store.event("utxo.create","tx:test","create",{{"coin",coin}});
+          f.store.event("utxo.spend","tx:test","spend",{{"previous",coin},{"coin",nullptr}});
+          f.store.event("utxo.undo-restore","reorg:test","undo-restore",{{"coin",coin}});
+          f.store.event("utxo.coverage-expiry","view:retention","coverage-expiry",{{"previous",coin},{"coin",nullptr}});
+          t.commit(); }
+        r.step(); check(lines.size()==4);
+        check(log_fields(lines[0])[2]=="/utxo/create/p2tr");
+        check(log_fields(lines[1])[2]=="/utxo/spend/p2tr");
+        check(log_fields(lines[2])[3]=="UNDO" && log_fields(lines[2])[5]=="0");
+        check(log_fields(lines[3])[3]=="EXPIRE" && log_fields(lines[3])[5]=="1");
+        for (const auto& line : lines) check(log_fields(line)[4]=="0");
+    });
+    test("Logstalgia default follows new journal events without snapshot replay",[] {
+        Fixture f; std::vector<std::string> lines;
+        { Transaction t(f.store); f.model.message("old","incoming","tx",400); t.commit(); }
+        LogstalgiaRenderer r(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); });
+        check(r.step()==0 && lines.empty());
+        { Transaction t(f.store); f.model.message("new","incoming","block",800); t.commit(); }
+        check(r.step()==1 && lines.size()==1 && log_fields(lines[0])[2].find("/block")!=std::string::npos);
+    });
+    test("Logstalgia cursor resume emits each later event once",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer first(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store); f.model.message("p","incoming","ping",8); t.commit(); }
+        first.step(); const auto cursor=first.cursor();
+        { Transaction t(f.store); f.model.message("p","outgoing","pong",8); t.commit(); }
+        LogstalgiaRenderer resumed(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); },cursor);
+        resumed.step(); check(lines.size()==2 && log_fields(lines.back())[3]=="TX");
+    });
+    test("Logstalgia retention gaps are explicit without invented traffic",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store);
+          for (int i=0;i<8;++i) f.model.message("p","incoming","ping",8);
+          f.store.prune(2); t.commit(); }
+        check(r.step()==2 && lines.size()==3);
+        const auto gap=log_fields(lines[0]);
+        check(gap[2]=="/observer/source-loss/journal-retention-gap" && gap[3]=="GAP" && gap[5]=="0");
+        check(r.step()==0 && lines.size()==3,"Repeated gap marker");
+    });
+    test("Logstalgia export is bounded while another connection keeps writing",[] {
+        Fixture f; std::vector<std::string> lines;
+        { Transaction t(f.store); f.model.message("p","incoming","ping",8); t.commit(); }
+        LogstalgiaRenderer r(f.path,"traffic",[&](const std::string& line) {
+            lines.push_back(line);
+            // Must succeed: renderer released its read snapshot before output.
+            Store writer(f.path); Transaction t(writer); Model m(writer); m.message("late","incoming","tx",100); t.commit();
+        },0);
+        r.run([] { return false; },false);
+        check(lines.size()==2,"Finite export must stop at its initial upper boundary");
+        check(log_fields(lines[0])[3]=="REBUILD" && log_fields(lines[1])[3]=="RX");
+    });
+    test("Logstalgia custom fields resist journal label injection",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"all",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store);
+          f.model.message("bad|host\npeer","incoming","tx|bad\nname",8,"captured|maybe\r");
+          f.store.event("mempool.remove","node|bad\n","unknown|cause\n",{{"txid","hash|extra\n"}}); t.commit(); }
+        r.step(); check(lines.size()==2);
+        for (const auto& line : lines) log_fields(line);
+        check(log_fields(lines[1])[8].find("%7C")!=std::string::npos);
+    });
+    test("Logstalgia preserves event order across wall-clock rollback",[] {
+        Fixture f; std::vector<std::string> lines;
+        LogstalgiaRenderer r(f.path,"traffic",[&](const std::string& line) { lines.push_back(line); });
+        { Transaction t(f.store);
+          auto a=f.store.event("peer.message.incoming","p","aggregate-bytes",{{"command","tx"},{"size_bytes",2}});
+          auto b=f.store.event("peer.message.outgoing","p","aggregate-bytes",{{"command","tx"},{"size_bytes",3}});
+          f.store.exec("UPDATE events SET observed_ns=? WHERE id=?",{200000000000LL,a});
+          f.store.exec("UPDATE events SET observed_ns=? WHERE id=?",{100000000000LL,b}); t.commit(); }
+        r.step(); check(lines.size()==2);
+        check(log_fields(lines[0])[0]=="200" && log_fields(lines[1])[0]=="200");
+    });
+    test("Logstalgia rejects invalid modes cursors and negative byte sizes",[] {
+        Fixture f; const auto output=[](const std::string&) {};
+        rejects([&] { LogstalgiaRenderer r(f.path,"bad",output); });
+        rejects([&] { LogstalgiaRenderer r(f.path,"traffic",output,-1); });
+        LogstalgiaRenderer r(f.path,"traffic",output);
+        { Transaction t(f.store); f.store.event("peer.message.incoming","p","aggregate-bytes",{{"size_bytes",-1}}); t.commit(); }
+        rejects([&] { r.step(); });
     });
     std::cout << "Native contracts: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

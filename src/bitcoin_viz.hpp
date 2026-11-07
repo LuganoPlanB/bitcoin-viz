@@ -189,13 +189,32 @@ public:
 };
 
 struct Options {
-    std::string command, mode = "state", network = "signet", rpc_url, zmq;
+    std::string command, format = "gource", mode = "state", network = "signet", rpc_url, zmq;
     std::filesystem::path database = ".runtime/bitcoin-viz.sqlite", datadir, cookie, capture_dir, input;
     std::int64_t window = 144, horizon = 288, bootstrap = 6, metadata_budget = 32, journal_keep = 100000;
     std::size_t max_visible = 5000;
     std::int64_t after = 0, limit = 100;
+    std::optional<std::int64_t> render_after;
     double peer_interval = 2, reconcile_interval = 15, duration = 0;
     bool once = false;
+};
+
+// Event stream, unlike Gource's persistent current-scene projection.
+class LogstalgiaRenderer {
+    Store s_;
+    std::string mode_;
+    std::function<void(const std::string&)> output_;
+    std::int64_t cursor_ = 0, last_time_ = 0;
+    std::optional<std::int64_t> end_;
+    void emit(std::int64_t stamp, const std::string& kind, const std::string& actor,
+              const Json& cause, const Json& data, std::int64_t id);
+public:
+    LogstalgiaRenderer(const std::filesystem::path& database, std::string mode,
+                      std::function<void(const std::string&)> output,
+                      std::optional<std::int64_t> after = std::nullopt);
+    std::size_t step();
+    void run(const std::function<bool()>& stopped, bool follow = true);
+    std::int64_t cursor() const { return cursor_; }
 };
 
 class Observer {

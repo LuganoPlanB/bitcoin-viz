@@ -34,14 +34,17 @@ void help() {
     std::cout << "Bitcoin Viz " BITCOIN_VIZ_VERSION " (C++17)\n"
       "Usage: bitcoin-viz <observe|live|render|status|events|demo|replay> [options]\n"
       "  --db PATH                     SQLite database (default .runtime/bitcoin-viz.sqlite)\n"
+      "  --format gource|logstalgia     Output format (default gource)\n"
       "  --mode state|protocol|utxo     Gource projection (default state)\n"
-      "  --max-visible N               Cap renderer only (default 5000)\n"
+      "  --mode traffic|mempool|blocks|utxo|all  Logstalgia events (default traffic)\n"
+      "  --max-visible N               Gource scene cap (default 5000)\n"
       "  --network signet|regtest       Expected Core chain (default signet)\n"
       "  --datadir PATH --cookie PATH --rpc-url http://127.0.0.1:38332 --zmq unix:/PATH\n"
       "  --window-blocks N --undo-horizon N --bootstrap-blocks N --metadata-budget N\n"
       "  --peer-interval SECONDS --reconcile-interval SECONDS --duration SECONDS\n"
       "  --journal-keep N --capture-dir PATH\n"
       "  render: --once; events: --after ID --limit N; replay: --input FILE.jsonl\n"
+      "  Logstalgia render follows new events; --once exports retained history; --after ID resumes\n"
       "Signet, local cookie RPC and the sequence publisher are the defaults.\n";
 }
 bitcoin_viz::Options options(int argc, char** argv) {
@@ -54,6 +57,7 @@ bitcoin_viz::Options options(int argc, char** argv) {
     if (!commands.count(o.command)) throw std::runtime_error("Unknown command: "+o.command);
     const bool collecting=o.command=="observe" || o.command=="live";
     const bool rendering=o.command=="live" || o.command=="render" || o.command=="demo";
+    bool mode_set=false, cap_set=false;
     for (int i=2;i<argc;++i) {
         const std::string key=argv[i];
         if (key=="--help" || key=="-h") { help(); std::exit(0); }
@@ -61,8 +65,9 @@ bitcoin_viz::Options options(int argc, char** argv) {
         if (i+1>=argc) throw std::runtime_error("Missing value for "+key);
         const std::string v=argv[++i];
         if (key=="--db") o.database=v;
-        else if (rendering && key=="--mode") o.mode=v;
-        else if (rendering && key=="--max-visible") o.max_visible=static_cast<std::size_t>(integer(v,true));
+        else if (rendering && key=="--format") o.format=v;
+        else if (rendering && key=="--mode") { o.mode=v; mode_set=true; }
+        else if (rendering && key=="--max-visible") { o.max_visible=static_cast<std::size_t>(integer(v,true)); cap_set=true; }
         else if (collecting && key=="--network") o.network=v;
         else if (collecting && key=="--datadir") o.datadir=v;
         else if (collecting && key=="--cookie") o.cookie=v;
@@ -78,11 +83,20 @@ bitcoin_viz::Options options(int argc, char** argv) {
         else if (collecting && key=="--duration") o.duration=duration(v);
         else if (collecting && key=="--capture-dir") o.capture_dir=v;
         else if (o.command=="events" && key=="--after") o.after=integer(v);
+        else if (o.command=="render" && key=="--after") o.render_after=integer(v);
         else if (o.command=="events" && key=="--limit") o.limit=integer(v,true);
         else if (o.command=="replay" && key=="--input") o.input=v;
         else throw std::runtime_error("Unknown option for "+o.command+": "+key);
     }
-    if (o.mode!="state" && o.mode!="protocol" && o.mode!="utxo") throw std::runtime_error("Invalid --mode");
+    if (o.format!="gource" && o.format!="logstalgia") throw std::runtime_error("--format must be gource or logstalgia");
+    if (o.format=="logstalgia") {
+        if (!mode_set) o.mode="traffic";
+        if (!std::set<std::string>{"traffic","mempool","blocks","utxo","all"}.count(o.mode)) throw std::runtime_error("Invalid Logstalgia --mode");
+        if (cap_set) throw std::runtime_error("--max-visible applies only to Gource scenes");
+    } else {
+        if (o.mode!="state" && o.mode!="protocol" && o.mode!="utxo") throw std::runtime_error("Invalid Gource --mode");
+        if (o.render_after) throw std::runtime_error("render --after applies only to Logstalgia events");
+    }
     if (o.network!="signet" && o.network!="regtest") throw std::runtime_error("--network must be signet or regtest");
     if (o.cookie.empty()) o.cookie=o.datadir/o.network/".cookie";
     if (o.rpc_url.empty()) o.rpc_url=std::string("http://127.0.0.1:")+(o.network=="signet" ? "38332" : "18443");
@@ -101,8 +115,14 @@ void demo(Store& s) {
     s.put("node_run","SYNTHETIC-DEMO"); s.put("network","synthetic"); m.checkpoint(hash_id(0),100,"synthetic-demo");
     m.admission(hash_id(10),fee_metadata({{"fees",{{"base","0.000003"}}},{"weight",480}}));
     m.admission(hash_id(11),fee_metadata({{"fees",{{"base","0.000024"}}},{"weight",720}}));
-    m.peers(Json::array({{{"id",7},{"conntime",1},{"network","ipv4"},{"connection_type","outbound-full-relay"}}}),"demo");
-    for (const std::string command : {"version","verack","ping","addr","headers","cmpctblock","tx","inv"}) m.message("demo-peer7","incoming",command,300);
+    m.peers(Json::array({{{"id",7},{"conntime",1},{"network","ipv4"},{"connection_type","outbound-full-relay"}},
+        {{"id",8},{"conntime",2},{"network","ipv6"},{"inbound",true}}}),"demo");
+    for (const std::string command : {"version","verack","ping","addr","headers","cmpctblock","tx","inv"})
+        m.message("demo-peer7-1","incoming",command,300,"synthetic-message");
+    m.message("demo-peer7-1","outgoing","pong",8,"synthetic-message");
+    m.message("demo-peer8-2","outgoing","inv",1800,"synthetic-message");
+    m.message("demo-peer8-2","incoming","getdata",1800,"synthetic-message");
+    m.message("demo-peer8-2","outgoing","tx",420,"synthetic-message");
     Json outputs=Json::array();
     for (int i=0;i<8;++i) outputs.push_back({{"n",i},{"value","0.001"},{"scriptPubKey",{{"hex","51"}}}});
     m.connect({{"hash",hash_id(1)},{"height",101},{"previousblockhash",hash_id(0)},
@@ -171,15 +191,28 @@ int main(int argc, char** argv) {
         }
         if (o.command=="render") {
             Output out(stopped);
-            Renderer renderer(o.database,o.mode,[&](const std::string& line) { out.write(line); },o.max_visible);
-            renderer.run(stopped,!o.once); return 0;
+            const auto write=[&](const std::string& line) { out.write(line); };
+            if (o.format=="logstalgia") {
+                LogstalgiaRenderer renderer(o.database,o.mode,write,o.once ? o.render_after.value_or(0) : o.render_after);
+                renderer.run(stopped,!o.once);
+            } else {
+                Renderer renderer(o.database,o.mode,write,o.max_visible);
+                renderer.run(stopped,!o.once);
+            }
+            return 0;
         }
         WriterLock writer(o.database);
         if ((o.command=="demo" || o.command=="replay") && std::filesystem::exists(o.database)) throw std::runtime_error("Synthetic input requires a NEW --db to protect existing observations");
         Store s(o.database);
         if (o.command=="demo") {
-            demo(s); Output out(stopped); Renderer renderer(o.database,o.mode,[&](const std::string& line) { out.write(line); },o.max_visible);
-            renderer.run(stopped,false); return 0;
+            demo(s); Output out(stopped);
+            const auto write=[&](const std::string& line) { out.write(line); };
+            if (o.format=="logstalgia") {
+                LogstalgiaRenderer renderer(o.database,o.mode,write,0); renderer.run(stopped,false);
+            } else {
+                Renderer renderer(o.database,o.mode,write,o.max_visible); renderer.run(stopped,false);
+            }
+            return 0;
         }
         if (o.command=="replay") { replay(s,o.input); std::cout << status(s).dump(2) << '\n'; return 0; }
         RPC rpc(o.rpc_url,o.cookie);
@@ -188,9 +221,16 @@ int main(int argc, char** argv) {
         std::thread renderer;
         std::exception_ptr render_error;
         if (o.command=="live") {
+            // Choose the journal boundary before collection starts so the
+            // renderer thread cannot miss the first new events if scheduled late.
+            const std::int64_t after=s.query("SELECT coalesce(max(id),0) FROM events")[0][0];
             output=std::make_unique<Output>(stopped);
-            renderer=std::thread([&] {
-                try { Renderer r(o.database,o.mode,[&](const std::string& line) { output->write(line); },o.max_visible); r.run(stopped); }
+            renderer=std::thread([&,after] {
+                try {
+                    const auto write=[&](const std::string& line) { output->write(line); };
+                    if (o.format=="logstalgia") { LogstalgiaRenderer r(o.database,o.mode,write,after); r.run(stopped); }
+                    else { Renderer r(o.database,o.mode,write,o.max_visible); r.run(stopped); }
+                }
                 catch (const OutputClosed&) { stop.store(true); }
                 catch (...) { render_error=std::current_exception(); stop.store(true); }
             });

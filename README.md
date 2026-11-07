@@ -1,8 +1,8 @@
 # Bitcoin Viz
 
-A C++17 observer for Bitcoin Core with three live Gource projections. It connects
+A C++17 observer for Bitcoin Core with live Gource and Logstalgia projections. It connects
 to Core's **ZMQ sequence publisher**, uses **local cookie-authenticated RPC**, and
-feeds **Gource through stdin**. Signet is the default. Core and Gource need no patches.
+feeds **Gource or Logstalgia through stdin**. Signet is the default. Core and the visualizers need no patches.
 
 The application, model and tests are native C++; build and release automation use
 CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency in
@@ -22,6 +22,17 @@ and SHA256 checksums. Linux release binaries use static Dyne musl builds.
 Recorded signet scenes: [state](docs/previews/state.mp4),
 [protocol](docs/previews/protocol.mp4), [UTXO window](docs/previews/utxo.mp4).
 See [verification and coverage](docs/VERIFICATION.md) for their provenance.
+
+For a flow-oriented view of peer traffic, mempool events, blocks and output
+turnover, see [Logstalgia views and custom field mapping](docs/LOGSTALGIA.md):
+
+```sh
+bitcoin-viz live --format logstalgia --datadir "$HOME/.bitcoin" |
+  logstalgia --sync --paddle-mode pid -g 'Traffic,URI=^/traffic/,90' -
+```
+
+Logstalgia defaults to `--mode traffic`; `mempool`, `blocks`, `utxo` and `all`
+are also available. Gource remains the default output format.
 
 ## Build and install
 

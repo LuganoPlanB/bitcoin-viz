@@ -14,13 +14,16 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
 
 The native-only suite contains:
 
-- `native-contract`: 36 model/platform cases including exact satoshis and wire
+- `native-contract`: 47 model/platform/renderer cases including exact satoshis and wire
   decoding, atomic rollback, reversed undo, pending overlays, retention, visibility,
   peer sessions/deltas, capture continuation/fairness, writer exclusion, UTF-8
   paths and an actual libzmq subscriber (IPC on POSIX, loopback TCP on Windows
-  or when the temporary directory exceeds the Unix-socket path limit).
+  or when the temporary directory exceeds the Unix-socket path limit), plus
+  Logstalgia fidelity, byte units, view selection, event cursors, retention gaps,
+  field escaping, ordered playback and finite exports during concurrent writes.
 - `cli`: executable identity/version, default database, synthetic demo, all three
-  Gource modes, status, journal output, replay and invalid-command/option rejection.
+  Gource and five Logstalgia modes, format defaults, cursor exports, status,
+  journal output, replay and invalid-command/option rejection.
 - `release-tools`: temporary Git candidates, strict versions, clean/base guards,
   bundle verification, repeat preparation, five fixture platform archives,
   dependency licenses, manifests, checksums and incomplete-set rejection.
@@ -30,8 +33,6 @@ integration are no longer part of the suite. The native contracts do not establi
 end-to-end cookie/session recovery against a live Core node. Cross-platform release
 jobs provide platform evidence only after actually running on their target runners.
 
-## Historical real signet evidence
-
 The native-only migration was checked on Linux x86_64 with GCC 14.2 and Clang 19.1:
 all three CTest suites passed in release and ASan/UBSan builds, with 36 passing
 native contracts. Installation and the installed executable's version were also
@@ -40,6 +41,23 @@ Matching Debian libcurl development headers were extracted under the ignored
 `.tools/native-deps/sysroot` and selected using `CURL_INCLUDE_DIR`; `CURL_LIBRARY`
 pointed to `/usr/lib/x86_64-linux-gnu/libcurl.so.4`. ccache used `build/.ccache`.
 No new live-node or desktop-platform run was performed for this migration.
+
+## Logstalgia verification
+
+The five-view renderer passed all three CTest suites in release and ASan/UBSan
+builds, including 47 native cases. Logstalgia 1.1.4 was extracted from Debian's
+package into the ignored `.tools` directory and used to play the emitted custom
+format with offscreen SDL/software OpenGL. File playback exited successfully.
+Stdin playback rendered the records and was stopped by the recording command's
+30-second timeout (Logstalgia keeps stream mode open). ffmpeg recorded a synthetic
+preview; its sample log, video and frame are
+under `docs/previews/logstalgia-demo.*`. No Core node is represented by that demo.
+
+The node-free checks establish event mapping, output framing, cursor behavior and
+actual Logstalgia playback. They do not establish live signet traffic rates or
+Core validation outcomes. See [view semantics](LOGSTALGIA.md).
+
+## Historical real signet evidence
 
 [verification-native-signet.json](verification-native-signet.json) preserves an
 earlier C++ signet run, including the executable's original path and a legacy
