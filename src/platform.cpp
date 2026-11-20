@@ -66,12 +66,14 @@ void initialize_process() {
 }
 std::filesystem::path default_datadir() {
 #ifdef _WIN32
-    if (const auto* roaming=_wgetenv(L"APPDATA")) {
+    const auto* roaming=_wgetenv(L"APPDATA");
+    if (roaming && *roaming) {
         const auto legacy=std::filesystem::path(roaming)/L"Bitcoin";
-        if (std::filesystem::is_directory(legacy)) return legacy;
+        std::error_code error;
+        if (std::filesystem::exists(legacy,error)) return legacy;
     }
-    if (const auto* local=_wgetenv(L"LOCALAPPDATA")) return std::filesystem::path(local)/L"Bitcoin";
-    if (const auto* roaming=_wgetenv(L"APPDATA")) return std::filesystem::path(roaming)/L"Bitcoin";
+    if (const auto* local=_wgetenv(L"LOCALAPPDATA"); local && *local) return std::filesystem::path(local)/L"Bitcoin";
+    if (roaming && *roaming) return std::filesystem::path(roaming)/L"Bitcoin";
     return "Bitcoin";
 #elif defined(__APPLE__)
     if (const char* home=std::getenv("HOME")) return std::filesystem::path(home)/"Library/Application Support/Bitcoin";

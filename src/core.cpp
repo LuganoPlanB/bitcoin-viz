@@ -4,6 +4,7 @@
 #include <zmq.h>
 #include <fstream>
 #include <cerrno>
+#include <cstring>
 #include <limits>
 #include <regex>
 #include <sstream>
@@ -83,7 +84,8 @@ Json parse_exact(const std::string& input) {
 }
 RPCError::RPCError(const std::string& method, int error_code, const std::string& message)
     : std::runtime_error(method + ": " + std::to_string(error_code) + ": " + message), code(error_code) {}
-RPC::RPC(const std::string& url, std::filesystem::path cookie) : url_(url), cookie_(std::move(cookie)) {
+RPC::RPC(const std::string& url, std::filesystem::path cookie, std::function<bool()> stopped)
+    : url_(url), cookie_(std::move(cookie)), stopped_(std::move(stopped)) {
     initialize_curl();
     std::unique_ptr<CURLU,decltype(&curl_url_cleanup)> parsed(curl_url(),curl_url_cleanup);
     if (!parsed || curl_url_set(parsed.get(),CURLUPART_URL,url.c_str(),0) != CURLUE_OK) throw std::runtime_error("Invalid RPC URL");
@@ -98,8 +100,36 @@ RPC::RPC(const std::string& url, std::filesystem::path cookie) : url_(url), cook
         throw std::runtime_error("RPC must be a local http:// loopback URL without embedded credentials");
 }
 RPC::~RPC() { close(); }
-void RPC::close() { if (curl_) curl_easy_cleanup(curl_); curl_ = nullptr; }
+void RPC::close() {
+    if (curl_) curl_easy_cleanup(curl_);
+    if (multi_) curl_multi_cleanup(multi_);
+    curl_ = nullptr;
+    multi_ = nullptr;
+}
+CURLcode RPC::perform() {
+    if (!stopped_) return curl_easy_perform(curl_);
+    if (!multi_) multi_ = curl_multi_init();
+    if (!multi_) throw std::runtime_error("libcurl multi handle allocation failed");
+    const auto check = [](CURLMcode result) {
+        if (result != CURLM_OK) throw std::runtime_error(curl_multi_strerror(result));
+    };
+    check(curl_multi_add_handle(multi_,curl_));
+    const auto detach = [this](CURL* handle) { curl_multi_remove_handle(multi_,handle); };
+    const std::unique_ptr<CURL,decltype(detach)> attached(curl_,detach);
+    int running = 0;
+    do {
+        if (stopped_()) throw std::runtime_error("RPC cancelled");
+        check(curl_multi_perform(multi_,&running));
+        if (running) check(curl_multi_poll(multi_,nullptr,0,50,nullptr));
+    } while (running);
+    if (stopped_()) throw std::runtime_error("RPC cancelled");
+    int remaining = 0;
+    const auto* result = curl_multi_info_read(multi_,&remaining);
+    if (!result || result->msg != CURLMSG_DONE) throw std::runtime_error("RPC transfer returned no result");
+    return result->data.result;
+}
 Json RPC::call(const std::string& method, const Json& params) {
+    if (stopped_ && stopped_()) throw std::runtime_error("RPC cancelled");
     const auto credential = read_cookie(cookie_);
     cookie_marker = hash256(credential);
     const auto id = ++serial_;
@@ -119,7 +149,7 @@ Json RPC::call(const std::string& method, const Json& params) {
         option(CURLOPT_HTTPHEADER,headers.get()); option(CURLOPT_WRITEFUNCTION,&receive_body); option(CURLOPT_WRITEDATA,&response);
         option(CURLOPT_NOSIGNAL,1L); option(CURLOPT_CONNECTTIMEOUT_MS,3000L); option(CURLOPT_TIMEOUT_MS,10000L);
         option(CURLOPT_FOLLOWLOCATION,0L); option(CURLOPT_PROXY,""); option(CURLOPT_NOPROXY,"*");
-        const auto result = curl_easy_perform(curl_);
+        const auto result = perform();
         if (result != CURLE_OK) throw RPCError(method,-1,response.failed ? "response exceeds resource limit" : curl_easy_strerror(result));
         long status_code = 0;
         if (curl_easy_getinfo(curl_,CURLINFO_RESPONSE_CODE,&status_code) != CURLE_OK) throw RPCError(method,-1,"HTTP status unavailable");
@@ -173,23 +203,43 @@ std::string SequenceFeed::error() { std::lock_guard<std::mutex> lock(mutex_); re
 void SequenceFeed::receive() {
     void* context = nullptr;
     void* socket = nullptr;
+    void* monitor = nullptr;
     try {
         context = zmq_ctx_new();
         if (!context) throw std::runtime_error("ZMQ context allocation failed");
         socket = zmq_socket(context,ZMQ_SUB);
-        if (!socket) throw std::runtime_error("ZMQ socket allocation failed");
+        monitor = zmq_socket(context,ZMQ_PAIR);
+        if (!socket || !monitor) throw std::runtime_error("ZMQ socket allocation failed");
         int hwm = static_cast<int>(capacity_), linger = 0, timeout = 100;
+        const int ipv6 = address_.rfind("tcp://[::1]",0) == 0;
         std::int64_t max_message = 1024 * 1024;
+        constexpr const char* monitor_endpoint = "inproc://sequence-monitor";
         if (zmq_setsockopt(socket,ZMQ_SUBSCRIBE,"sequence",8) || zmq_setsockopt(socket,ZMQ_RCVHWM,&hwm,sizeof(hwm)) ||
             zmq_setsockopt(socket,ZMQ_LINGER,&linger,sizeof(linger)) || zmq_setsockopt(socket,ZMQ_RCVTIMEO,&timeout,sizeof(timeout)) ||
-            zmq_setsockopt(socket,ZMQ_MAXMSGSIZE,&max_message,sizeof(max_message)) || zmq_connect(socket,address_.c_str()))
+            zmq_setsockopt(socket,ZMQ_MAXMSGSIZE,&max_message,sizeof(max_message)) ||
+            (ipv6 && zmq_setsockopt(socket,ZMQ_IPV6,&ipv6,sizeof(ipv6))) ||
+            zmq_setsockopt(monitor,ZMQ_LINGER,&linger,sizeof(linger)) ||
+            zmq_socket_monitor(socket,monitor_endpoint,ZMQ_EVENT_HANDSHAKE_SUCCEEDED | ZMQ_EVENT_DISCONNECTED) ||
+            zmq_connect(monitor,monitor_endpoint) || zmq_connect(socket,address_.c_str()))
             throw std::runtime_error("ZMQ subscriber configuration/connect failed");
         { std::lock_guard<std::mutex> lock(mutex_); ready_ = true; ready_cv_.notify_all(); }
         while (!stop_.load()) {
-            zmq_pollitem_t item{socket,0,ZMQ_POLLIN,0};
-            const int polled = zmq_poll(&item,1,100);
+            zmq_pollitem_t items[]{{monitor,0,ZMQ_POLLIN,0},{socket,0,ZMQ_POLLIN,0}};
+            const int polled = zmq_poll(items,2,100);
             if (polled < 0) { if (zmq_errno() == EINTR) continue; throw std::runtime_error("ZMQ poll failed"); }
-            if (!polled) continue;
+            if (items[0].revents & ZMQ_POLLIN) {
+                // Monitor v1 sends an event number and value in a six-byte
+                // frame, then the peer address, which the subscriber knows.
+                char frame[6], address;
+                if (zmq_recv(monitor,frame,sizeof(frame),ZMQ_DONTWAIT) != static_cast<int>(sizeof(frame)) ||
+                    zmq_recv(monitor,&address,1,ZMQ_DONTWAIT) < 0)
+                    throw std::runtime_error("ZMQ monitor event unavailable");
+                std::uint16_t event;
+                std::memcpy(&event,frame,sizeof(event));
+                if (event == ZMQ_EVENT_HANDSHAKE_SUCCEEDED) connected_ = true;
+                if (event == ZMQ_EVENT_DISCONNECTED && connected_.exchange(false)) ++disconnects;
+            }
+            if (!(items[1].revents & ZMQ_POLLIN)) continue;
             std::vector<std::string> frames;
             bool more = false, invalid = false;
             do {
@@ -215,7 +265,9 @@ void SequenceFeed::receive() {
     } catch (const std::exception& e) {
         std::lock_guard<std::mutex> lock(mutex_); error_ = e.what(); ready_ = true; ready_cv_.notify_all();
     }
+    connected_ = false;
     if (socket) zmq_close(socket);
+    if (monitor) zmq_close(monitor);
     if (context) zmq_ctx_term(context);
 }
 } // namespace bitcoin_viz

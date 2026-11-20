@@ -245,6 +245,7 @@ int run(bool preview, fs::path recording) {
         if (!preview && recording.empty()) session.connect(panel.node);
         bool running = true;
         fs::path active;
+        std::uint64_t active_generation = 0;
         Uint64 last = SDL_GetPerformanceCounter();
         while (running) {
             SDL_Event event;
@@ -275,8 +276,9 @@ int run(bool preview, fs::path recording) {
             auto state = session.state();
             if (!recording.empty()) state = {"Recording / "+platform::utf8_path(recording.filename()),recording};
             if (panel.preview) state = {"Generated node activity",sample.open()};
-            if (state.database != active || panel.apply) {
+            if (state.generation != active_generation || state.database != active || panel.apply) {
                 active = state.database;
+                active_generation = state.generation;
                 panel.apply = false;
                 try {
                     view.open(panel,active,panel.preview || !recording.empty());
