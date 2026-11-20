@@ -1,0 +1,1396 @@
+#include <imkit/editor_core.h>
+#include <imkit/widgets.h>
+#include <imkit/charts.h>
+#include "transaction_support.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <cstring>
+#include <cstdlib>
+#include <cctype>
+
+namespace imkit::editor {
+namespace {
+Tick Rounded(long double value) {
+    if (value >= static_cast<long double>((std::numeric_limits<Tick>::max)()))
+        return (std::numeric_limits<Tick>::max)();
+    if (value <= static_cast<long double>((std::numeric_limits<Tick>::min)()))
+        return (std::numeric_limits<Tick>::min)();
+    return static_cast<Tick>(value);
+}
+bool DropRate(FrameRate r) {
+    return r.denominator == 1001 && (r.numerator == 30000 || r.numerator == 60000);
+}
+ImVec2 Screen(Point p, const CanvasState &s, ImVec2 origin) {
+    auto v = ToScreen(p, s, {origin.x, origin.y});
+    return {static_cast<float>(v.x), static_cast<float>(v.y)};
+}
+void Diamond(ImDrawList *d, ImVec2 p, ImU32 color, float r = 5) {
+    d->AddQuadFilled({p.x, p.y - r}, {p.x + r, p.y}, {p.x, p.y + r}, {p.x - r, p.y}, color);
+}
+// Key diamond with a thin canvas-coloured halo so keys stay legible over curves and grid lines.
+void KeyDiamond(ImDrawList *d, ImVec2 p, ImU32 fill, ImU32 halo, float r) {
+    d->AddQuadFilled({p.x, p.y - r - 1.5f}, {p.x + r + 1.5f, p.y}, {p.x, p.y + r + 1.5f}, {p.x - r - 1.5f, p.y}, halo);
+    Diamond(d, p, fill, r);
+}
+bool Flag(PropertyFlags f, PropertyFlags bit) {
+    return (static_cast<unsigned>(f) & static_cast<unsigned>(bit)) != 0;
+}
+void Action(EventBuffer &out, StableId id, std::uint64_t revision, EditKind kind, Value from = {},
+            Value to = {}) {
+    out.Push({id, revision, Phase::Commit, kind, from, to, CurrentModifiers()});
+}
+} // namespace
+bool Valid(FrameRate r) {
+    return r.numerator > 0 && r.denominator > 0;
+}
+Tick FrameToTick(std::int64_t f, FrameRate r) {
+    return Valid(r) ? Rounded(std::round(static_cast<long double>(f) * TicksPerSecond * r.denominator /
+                                         r.numerator))
+                    : 0;
+}
+std::int64_t TickToFrame(Tick t, FrameRate r) {
+    return Valid(r) ? Rounded(std::round(static_cast<long double>(t) * r.numerator /
+                                         (static_cast<long double>(TicksPerSecond) * r.denominator)))
+                    : 0;
+}
+double Seconds(Tick t) {
+    return static_cast<double>(t) / TicksPerSecond;
+}
+Tick FromSeconds(double s) {
+    return std::isfinite(s) ? Rounded(std::round(static_cast<long double>(s) * TicksPerSecond)) : 0;
+}
+bool FormatTimecode(Tick tick, FrameRate rate, bool drop, std::span<char> out) {
+    if (!Valid(rate) || out.empty() || (drop && !DropRate(rate)))
+        return false;
+    auto frame = TickToFrame(tick, rate);
+    const bool negative = frame < 0;
+    // Tick range is narrower than frame range for supported timecode rates.
+    if (frame == (std::numeric_limits<Tick>::min)())
+        return false;
+    if (negative)
+        frame = -frame;
+    const int fps = static_cast<int>(std::lround(static_cast<double>(rate.numerator) / rate.denominator));
+    if (fps < 1 || fps > 120)
+        return false;
+    if (drop) {
+        const int d = fps / 15, ten = fps * 600 - d * 9, minute = fps * 60 - d;
+        const auto rest = frame % ten;
+        frame += d * 9 * (frame / ten) + (rest >= d ? d * ((rest - d) / minute) : 0);
+    }
+    const auto hours = frame / (fps * 3600);
+    int n = std::snprintf(out.data(), out.size(), "%s%02lld:%02lld:%02lld%c%02lld", negative ? "-" : "",
+                          static_cast<long long>(hours), static_cast<long long>(frame / (fps * 60) % 60),
+                          static_cast<long long>(frame / fps % 60), drop ? ';' : ':',
+                          static_cast<long long>(frame % fps));
+    return n >= 0 && static_cast<std::size_t>(n) < out.size();
+}
+bool ParseTimecode(std::string_view text, FrameRate r, bool drop, Tick &result) {
+    if (!Valid(r) || (drop && !DropRate(r)))
+        return false;
+    bool negative = !text.empty() && text.front() == '-';
+    if (negative)
+        text.remove_prefix(1);
+    if (text.size() != 11 || text[2] != ':' || text[5] != ':' || text[8] != (drop ? ';' : ':'))
+        return false;
+    int v[4]{};
+    for (int i = 0; i < 4; ++i) {
+        auto a = text[i * 3], b = text[i * 3 + 1];
+        if (a < '0' || a > '9' || b < '0' || b > '9')
+            return false;
+        v[i] = (a - '0') * 10 + b - '0';
+    }
+    int fps = static_cast<int>(std::lround(static_cast<double>(r.numerator) / r.denominator));
+    if (fps < 1 || fps > 120 || v[1] >= 60 || v[2] >= 60 || v[3] >= fps)
+        return false;
+    int d = drop ? fps / 15 : 0;
+    if (drop && v[1] % 10 && v[2] == 0 && v[3] < d)
+        return false;
+    Tick minutes = v[0] * 60 + v[1];
+    Tick f = ((minutes * 60) + v[2]) * fps + v[3] - d * (minutes - minutes / 10);
+    result = FrameToTick(negative ? -f : f, r);
+    return true;
+}
+Modifiers CurrentModifiers() {
+    const auto &io = ImGui::GetIO();
+    return {io.KeyShift, io.KeyCtrl, io.KeyAlt};
+}
+bool EventBuffer::PushBatch(std::span<const Event> batch) {
+    if (count>storage.size() || batch.size()>storage.size()-count) {overflow=true;return false;}
+    if (!batch.empty()) for (const auto &event:batch)
+        if (event.revision!=batch.front().revision || event.phase!=batch.front().phase) return false;
+    std::copy(batch.begin(),batch.end(),storage.begin()+count);count+=batch.size();return true;
+}
+bool EventBuffer::Push(const Event &e) {
+    if (count >= storage.size()) {
+        overflow = true;
+        return false;
+    }
+    storage[count++] = e;
+    return true;
+}
+void EventBuffer::Clear() {
+    count = 0;
+    overflow = false;
+}
+std::span<const Event> EventBuffer::Events() const {
+    return storage.first(count);
+}
+bool Transaction::Begin(StableId id, std::uint64_t rev, EditKind kind, Value value, Modifiers mod,
+                        EventBuffer &out) {
+    if (active)
+        return false;
+    Event event{id, rev, Phase::Begin, kind, value, value, mod};
+    if (!out.Push(event))
+        return false;
+    draft = event;
+    active = true;
+    return true;
+}
+bool Transaction::Update(std::uint64_t rev, Value value, EventBuffer &out) {
+    if (!active)
+        return false;
+    if (draft.phase == Phase::Commit || draft.phase == Phase::Cancel) {
+        detail::ResumeTerminal(*this, rev, out);
+        return false;
+    }
+    if (rev != draft.revision) {
+        Cancel(out);
+        return false;
+    }
+    Event event = draft;
+    event.phase = Phase::Update;
+    event.proposed = value;
+    if (!out.Push(event))
+        return false;
+    draft = event;
+    return true;
+}
+bool Transaction::Commit(std::uint64_t rev, EventBuffer &out) {
+    if (!active)
+        return false;
+    if (rev != draft.revision) {
+        Cancel(out);
+        return false;
+    }
+    if (draft.phase == Phase::Cancel) {
+        Cancel(out);
+        return false;
+    }
+    draft.phase = Phase::Commit;
+    if (!out.Push(draft))
+        return false;
+    active = false;
+    return true;
+}
+void Transaction::Cancel(EventBuffer &out) {
+    if (!active)
+        return;
+    draft.phase = Phase::Cancel;
+    draft.proposed = draft.original;
+    draft.proposedText = draft.originalText;
+    if (out.Push(draft))
+        active = false;
+}
+bool Selection::Contains(StableId id) const {
+    return std::find(storage.begin(), storage.begin() + count, id) != storage.begin() + count;
+}
+void Selection::Clear() {
+    count = 0;
+    active = 0;
+}
+bool Selection::Set(StableId id, bool additive, bool toggle) {
+    if (!additive && !toggle)
+        Clear();
+    auto end = storage.begin() + count, it = std::find(storage.begin(), end, id);
+    if (it != end) {
+        if (toggle) {
+            std::move(it + 1, end, it);
+            --count;
+        }
+        active = count ? storage[count - 1] : 0;
+        return true;
+    }
+    if (count == storage.size())
+        return false;
+    storage[count++] = id;
+    active = id;
+    return true;
+}
+SnapResult ResolveSnap(Tick t, std::span<const SnapCandidate> candidates, double scale, double threshold,
+                       StableId exclude) {
+    SnapResult result{t};
+    result.distancePixels = threshold;
+    if (!std::isfinite(scale) || scale <= 0 || threshold < 0)
+        return result;
+    for (const auto &c : candidates) {
+        if (exclude && c.id == exclude)
+            continue;
+        double distance = std::abs(static_cast<double>(static_cast<long double>(c.tick) - t) * scale);
+        if (distance > threshold)
+            continue;
+        if (!result.snapped || c.priority > result.candidate.priority ||
+            (c.priority == result.candidate.priority && distance < result.distancePixels))
+            result = {c.tick, true, c, distance};
+    }
+    return result;
+}
+Point ToScreen(Point v, const CanvasState &s, Point o) {
+    return {o.x + (v.x - s.origin.x) * s.scale.x, o.y + (v.y - s.origin.y) * s.scale.y};
+}
+Point FromScreen(Point v, const CanvasState &s, Point o) {
+    return {s.origin.x + (v.x - o.x) / s.scale.x, s.origin.y + (v.y - o.y) / s.scale.y};
+}
+Rect VisibleRange(const CanvasState &s, Point size) {
+    return {s.origin, {s.origin.x + size.x / s.scale.x, s.origin.y + size.y / s.scale.y}};
+}
+void ZoomAt(CanvasState &s, Point anchor, Point factor) {
+    Point at = FromScreen(anchor, s, {});
+    s.scale = {std::clamp(s.scale.x * factor.x, 1e-9, 1e9), std::clamp(s.scale.y * factor.y, 1e-9, 1e9)};
+    s.origin = {at.x - anchor.x / s.scale.x, at.y - anchor.y / s.scale.y};
+}
+void Fit(CanvasState &s, Rect r, Point size, double pad) {
+    s.scale = {(std::max)(1., size.x - 2 * pad) / (std::max)(1e-9, r.max.x - r.min.x),
+               (std::max)(1., size.y - 2 * pad) / (std::max)(1e-9, r.max.y - r.min.y)};
+    s.origin = {r.min.x - pad / s.scale.x, r.min.y - pad / s.scale.y};
+}
+bool InPolygon(Point p, std::span<const Point> polygon) {
+    if (polygon.size() < 3)
+        return false;
+    bool inside = false;
+    for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        auto a = polygon[i], b = polygon[j];
+        if (((a.y > p.y) != (b.y > p.y)) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)
+            inside = !inside;
+    }
+    return inside;
+}
+CanvasView BeginCanvas(const char *id, CanvasState &s, ImVec2 size, const Theme &t) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, t.editor.canvas);
+    ImGui::BeginChild(id, size, ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    CanvasView v;
+    v.min = ImGui::GetCursorScreenPos();
+    auto available = ImGui::GetContentRegionAvail();
+    v.max = {v.min.x + available.x, v.min.y + available.y};
+    v.hovered = ImGui::IsWindowHovered();
+    if (v.hovered) {
+        const auto &io = ImGui::GetIO();
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            s.origin.x -= io.MouseDelta.x / s.scale.x;
+            s.origin.y -= io.MouseDelta.y / s.scale.y;
+        }
+        if (s.wheelZoom && io.MouseWheel && !ImGui::IsAnyItemActive()) {
+            const double factor = std::pow(1.15, io.MouseWheel);
+            ZoomAt(s, {io.MousePos.x - v.min.x, io.MousePos.y - v.min.y},
+                   {factor, io.KeyShift || !s.wheelZoomY ? 1 : factor});
+        }
+        s.origin.x -= io.MouseWheelH * 32 / s.scale.x;
+    }
+    v.visible = VisibleRange(s, {available.x, available.y});
+    ImGui::GetWindowDrawList()->PushClipRect(v.min, v.max, true);
+    return v;
+}
+void EndCanvas() {
+    ImGui::GetWindowDrawList()->PopClipRect();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+void CanvasSelection(const CanvasView &v, CanvasState &s, const SelectionProvider &p, Selection &selection,
+                     EventBuffer &out, const Theme &theme, bool lasso) {
+    const auto &io = ImGui::GetIO();
+    Point mouse = FromScreen({io.MousePos.x, io.MousePos.y}, s, {v.min.x, v.min.y});
+    if (v.hovered && !ImGui::IsAnyItemHovered() && !ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(0)) {
+        s.selecting = true;
+        s.lasso = lasso;
+        s.selectionStart = mouse;
+        s.pathCount = 0;
+        if (lasso && s.selectionPath.size()<3) {out.overflow=true;s.selecting=false;return;}
+        if (!s.selectionPath.empty())
+            s.selectionPath[s.pathCount++] = mouse;
+    }
+    if (!s.selecting)
+        return;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        s.selecting = false;
+        return;
+    }
+    if (s.lasso && ImGui::IsMouseDown(0) && s.pathCount==s.selectionPath.size()) {
+        out.overflow=true;s.selecting=false;return;
+    }
+    if (s.lasso && ImGui::IsMouseDown(0) && s.pathCount < s.selectionPath.size()) {
+        const auto previous = s.selectionPath[s.pathCount - 1];
+        if (std::hypot((mouse.x - previous.x) * s.scale.x, (mouse.y - previous.y) * s.scale.y) >= 3)
+            s.selectionPath[s.pathCount++] = mouse;
+    }
+    auto *d = ImGui::GetWindowDrawList();
+    auto color = ImGui::GetColorU32(theme.colors.focus);
+    Rect bounds{{(std::min)(s.selectionStart.x, mouse.x), (std::min)(s.selectionStart.y, mouse.y)},
+                {(std::max)(s.selectionStart.x, mouse.x), (std::max)(s.selectionStart.y, mouse.y)}};
+    if (s.lasso) {
+        for (std::size_t i = 0; i < s.pathCount; ++i) {
+            auto a = s.selectionPath[i], b = s.selectionPath[(i + 1) % s.pathCount];
+            d->AddLine(Screen(a, s, v.min), Screen(b, s, v.min), color);
+            bounds.min.x = (std::min)(bounds.min.x, a.x);
+            bounds.min.y = (std::min)(bounds.min.y, a.y);
+            bounds.max.x = (std::max)(bounds.max.x, a.x);
+            bounds.max.y = (std::max)(bounds.max.y, a.y);
+        }
+    } else {
+        auto fill = theme.colors.focus;
+        fill.w *= .14f;
+        d->AddRectFilled(Screen(bounds.min, s, v.min), Screen(bounds.max, s, v.min), ImGui::GetColorU32(fill), 3.f);
+        d->AddRect(Screen(bounds.min, s, v.min), Screen(bounds.max, s, v.min), color, 3.f, 0, 1.25f);
+    }
+    if (ImGui::IsMouseReleased(0)) {
+        auto points = p.query ? p.query(p.user, bounds) : std::span<const SelectablePoint>{};
+        const bool additive=io.KeyCtrl || io.KeyShift;
+        auto inside=[&](const SelectablePoint &point) {
+            return !point.locked && (s.lasso?InPolygon(point.position,s.selectionPath.first(s.pathCount)):
+                point.position.x>=bounds.min.x && point.position.x<=bounds.max.x &&
+                point.position.y>=bounds.min.y && point.position.y<=bounds.max.y);
+        };
+        std::size_t targets=0,required=additive?selection.count:0;
+        for (auto point:points) if (inside(point)) {++targets;if (!additive || !selection.Contains(point.id)) ++required;}
+        if (required>selection.storage.size() || targets>out.storage.size()-out.count) out.overflow=true;
+        else {
+            if (!additive) selection.Clear();
+            for (auto point:points) if (inside(point)) {
+                selection.Set(point.id,true);
+                Action(out,point.id,p.revision,s.lasso?EditKind::LassoSelect:EditKind::BoxSelect);
+            }
+        }
+        s.selecting = false;
+    }
+}
+// Grid step per axis in canvas units, widened by factors of ten until lines are at least 20 px apart.
+static Point GridStep(const CanvasState &s, Point spacing) {
+    Point step = spacing;
+    for (int axis = 0; axis < 2; ++axis) {
+        double &value = axis ? step.y : step.x;
+        const double scale = axis ? s.scale.y : s.scale.x;
+        if (value <= 0 || !std::isfinite(value) || !(scale > 0))
+            continue;
+        while (value * scale < 20)
+            value *= 10;
+    }
+    return step;
+}
+// Minor lines are faint, every fifth is stronger and the zero axes are the strongest, so the grid
+// reads as structure rather than a uniform net.
+void DrawGrid(const CanvasView &v, const CanvasState &s, Point spacing, const Theme &t) {
+    auto *d = ImGui::GetWindowDrawList();
+    const auto line = [&](float alpha) {
+        auto c = t.editor.grid;
+        c.w *= alpha;
+        return ImGui::GetColorU32(c);
+    };
+    const Point steps = GridStep(s, spacing);
+    for (int axis = 0; axis < 2; ++axis) {
+        const double step = axis ? steps.y : steps.x;
+        if (step <= 0 || !std::isfinite(step))
+            continue;
+        const double lo = axis ? v.visible.min.y : v.visible.min.x, hi = axis ? v.visible.max.y : v.visible.max.x;
+        if (!std::isfinite(lo) || !std::isfinite(hi) || (hi - lo) / step > 4096)
+            continue; // Non-finite or absurdly dense ranges would not draw a readable grid.
+        for (long long i = static_cast<long long>(std::ceil(lo / step)); static_cast<double>(i) * step <= hi; ++i) {
+            const double p = static_cast<double>(i) * step;
+            auto q = Screen(axis ? Point{v.visible.min.x, p} : Point{p, v.visible.min.y}, s, v.min);
+            const bool zero = i == 0;
+            d->AddLine(q, axis ? ImVec2{v.max.x, q.y} : ImVec2{q.x, v.max.y}, line(zero ? .8f : i % 5 == 0 ? .38f : .16f),
+                       zero ? 1.5f : 1.f);
+        }
+    }
+}
+// Small value labels along the top (time) and left (value) edges, drawn inside the canvas so the
+// canvas-to-screen mapping stays untouched.
+static void DrawGridLabels(const CanvasView &v, const CanvasState &s, Point spacing, const Theme &t) {
+    auto *d = ImGui::GetWindowDrawList();
+    const Point steps = GridStep(s, spacing);
+    auto color = t.colors.muted;
+    color.w *= .85f;
+    const ImU32 ink = ImGui::GetColorU32(color);
+    ImFont *font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize() * .8f;
+    for (int axis = 0; axis < 2; ++axis) {
+        const double step = axis ? steps.y : steps.x, scale = axis ? s.scale.y : s.scale.x;
+        if (step <= 0 || !std::isfinite(step) || !(scale > 0))
+            continue;
+        const long long every = std::max<long long>(1, static_cast<long long>(std::ceil((axis ? 30. : 56.) / (step * scale))));
+        const double lo = axis ? v.visible.min.y : v.visible.min.x, hi = axis ? v.visible.max.y : v.visible.max.x;
+        if (!std::isfinite(lo) || !std::isfinite(hi) || (hi - lo) / step > 4096)
+            continue; // Non-finite or absurdly dense ranges would not draw a readable grid.
+        for (long long i = static_cast<long long>(std::ceil(lo / step)); static_cast<double>(i) * step <= hi; ++i) {
+            if (i % every)
+                continue;
+            const double p = static_cast<double>(i) * step;
+            char text[24];
+            std::snprintf(text, sizeof(text), axis ? "%g" : "%gs", axis ? (p == 0 ? 0. : -p) : p);
+            auto q = Screen(axis ? Point{v.visible.min.x, p} : Point{p, v.visible.min.y}, s, v.min);
+            if (axis)
+                d->AddText(font, size, {v.min.x + 5, q.y - size - 2}, ink, text);
+            else
+                d->AddText(font, size, {q.x + 4, v.min.y + 4}, ink, text);
+        }
+    }
+}
+std::size_t MakeBindings(ShortcutPreset preset, std::span<Binding> dst) {
+    const Binding defaults[] = {{Command::PlayPause, ImGuiKey_Space},
+                                {Command::Pause, ImGuiKey_K},
+                                {Command::PreviousFrame, ImGuiKey_LeftArrow},
+                                {Command::NextFrame, ImGuiKey_RightArrow},
+                                {Command::SetIn, ImGuiKey_I},
+                                {Command::SetOut, ImGuiKey_O},
+                                {Command::Loop, ImGuiMod_Ctrl | ImGuiKey_L},
+                                {Command::Split, ImGuiMod_Ctrl | ImGuiKey_B},
+                                {Command::Delete, ImGuiKey_Delete},
+                                {Command::Duplicate, ImGuiMod_Ctrl | ImGuiKey_D},
+                                {Command::SelectAll, ImGuiMod_Ctrl | ImGuiKey_A},
+                                {Command::Fit, ImGuiKey_Home},
+                                {Command::AddKey, ImGuiKey_I},
+                                {Command::PreviousKey, ImGuiKey_UpArrow},
+                                {Command::NextKey, ImGuiKey_DownArrow},
+                                {Command::Undo, ImGuiMod_Ctrl | ImGuiKey_Z},
+                                {Command::Redo, ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z},
+                                {Command::PlayReverse, ImGuiKey_J},
+                                {Command::PlayForward, ImGuiKey_L},
+                                {Command::ToolSelect, ImGuiKey_V},
+                                {Command::ToolRazor, ImGuiKey_C},
+                                {Command::ToolRipple, ImGuiKey_B},
+                                {Command::ToolRoll, ImGuiKey_N},
+                                {Command::ToolSlip, ImGuiKey_Y},
+                                {Command::ToolSlide, ImGuiKey_U},
+                                {Command::ToolHand, ImGuiKey_H},
+                                {Command::InsertSource, ImGuiKey_F9},
+                                {Command::OverwriteSource, ImGuiKey_F10},
+                                {Command::AppendSource, ImGuiMod_Shift | ImGuiKey_F9},
+                                {Command::CopyClips, ImGuiMod_Ctrl | ImGuiKey_C},
+                                {Command::CutClips, ImGuiMod_Ctrl | ImGuiKey_X},
+                                {Command::PasteClips, ImGuiMod_Ctrl | ImGuiKey_V}};
+    auto n = (std::min)(dst.size(), std::size(defaults));
+    std::copy_n(defaults, n, dst.begin());
+    for (auto &b : dst.first(n)) {
+        if (preset == ShortcutPreset::Premiere && b.command == Command::Split)
+            b.chord = ImGuiMod_Ctrl | ImGuiKey_K;
+        if (preset == ShortcutPreset::Blender && b.command == Command::Duplicate)
+            b.chord = ImGuiMod_Shift | ImGuiKey_D;
+    }
+    return n;
+}
+bool CommandPressed(Command command, std::span<const Binding> bindings, bool focused) {
+    if (!focused || ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive() ||
+        ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel))
+        return false;
+    for (auto b : bindings)
+        if (b.command == command && (b.chord & ~ImGuiMod_Mask_) && ImGui::IsKeyChordPressed(b.chord))
+            return true;
+    return false;
+}
+double FollowPlayhead(double origin,double width,double head,AutoScroll mode) {
+    if (!std::isfinite(origin) || !std::isfinite(width) || !std::isfinite(head) || width<=0 || mode==AutoScroll::Off)
+        return origin;
+    if (mode==AutoScroll::Page) {
+        if (head<origin || head>=origin+width) return origin+std::floor((head-origin)/width)*width;
+        return origin;
+    }
+    const double margin=width*.1;
+    if (head>origin+width-margin) return head-width+margin;
+    if (head<origin+margin) return head-margin;
+    return origin;
+}
+void Transport(TimeState &s, std::span<const Binding> bindings) {
+    Transport(s, bindings, nullptr);
+}
+void Transport(TimeState &s, std::span<const Binding> bindings, const IconAtlas *icons) {
+    auto button = [&](const char *id, IconId icon, const char *label) {
+        return icons ? IconButton(id, *icons, icon, label) : ImGui::Button(label);
+    };
+    bool focused = ImGui::IsWindowFocused();
+    if (focused && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive()) {
+        if (CommandPressed(Command::PlayReverse, bindings, focused)) {
+            s.playbackRate = s.playing && s.playbackRate < 0 ? s.playbackRate * 2 : -1;
+            s.playing = true;
+        }
+        if (CommandPressed(Command::PlayForward, bindings, focused)) {
+            s.playbackRate = s.playing && s.playbackRate > 0 ? s.playbackRate * 2 : 1;
+            s.playing = true;
+        }
+    }
+    // Quiet transport: no outline, narrower buttons, and a tinted Play button as the one emphasis.
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {ImGui::GetStyle().FramePadding.x * .62f, ImGui::GetStyle().FramePadding.y});
+    const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_SliderGrab);
+    auto tint = [&](float alpha) { auto c = accent; c.w = alpha; return c; };
+    ImGui::PushStyleColor(ImGuiCol_Button, tint(.24f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, tint(.36f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, tint(.48f));
+    const bool togglePlay = button("play-pause", s.playing ? IconId::Pause : IconId::Play, s.playing ? s.labels.pause : s.labels.play);
+    ImGui::PopStyleColor(3);
+    if (togglePlay || CommandPressed(Command::PlayPause, bindings, focused))
+        s.playing = !s.playing;
+    ImGui::SameLine();
+    if (button("stop", IconId::Stop, s.labels.stop) || CommandPressed(Command::Stop, bindings, focused)) {
+        s.playing = false;
+        s.playhead = s.inOut.first;
+    }
+    ImGui::SameLine();
+    if (button("previous-frame", IconId::PreviousFrame, s.labels.previousFrame) || CommandPressed(Command::PreviousFrame, bindings, focused))
+        s.playhead = FrameToTick(TickToFrame(s.playhead, s.rate) - 1, s.rate);
+    ImGui::SameLine();
+    if (button("next-frame", IconId::NextFrame, s.labels.nextFrame) || CommandPressed(Command::NextFrame, bindings, focused))
+        s.playhead = FrameToTick(TickToFrame(s.playhead, s.rate) + 1, s.rate);
+    ImGui::SameLine();
+    if (button("set-in",IconId::SetInPoint,s.labels.in) || CommandPressed(Command::SetIn, bindings, focused))
+        s.inOut.first = (std::min)(s.playhead, s.inOut.last);
+    ImGui::SameLine();
+    if (button("set-out",IconId::SetOutPoint,s.labels.out) || CommandPressed(Command::SetOut, bindings, focused))
+        s.inOut.last = (std::max)(s.playhead, s.inOut.first);
+    ImGui::PopStyleVar(2);
+    ImGui::SameLine();
+    if (CommandPressed(Command::Pause, bindings, focused)) s.playing = false;
+    if (CommandPressed(Command::Loop, bindings, focused)) s.loop = !s.loop;
+    imkit::Checkbox(s.labels.loop, &s.loop);
+    if (CommandPressed(Command::GoToStart,bindings,focused)) s.playhead=s.work.first;
+    if (CommandPressed(Command::GoToEnd,bindings,focused)) s.playhead=s.work.last;
+    if (CommandPressed(Command::ClearInOut,bindings,focused)) s.inOut=s.work;
+    char text[32];
+    FormatTimecode(s.playhead, s.rate, s.dropFrame, text);
+    ImGui::SameLine();
+    if(icons) {Icon(*icons,IconId::Timecode,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+    ImGui::TextUnformatted(text);
+    if (ImGui::BeginPopupContextItem("transport-actions")) {
+        const auto action=[&](const char *label,IconId glyph) {
+            if (icons) {Icon(*icons,glyph,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+            return ImGui::MenuItem(label);
+        };
+        if (action(s.labels.goToStart,IconId::PreviousTrack)) s.playhead=s.work.first;
+        if (action(s.labels.goToEnd,IconId::NextTrack)) s.playhead=s.work.last;
+        if (action(s.labels.clearInOut,IconId::Reset)) s.inOut=s.work;
+        ImGui::Separator();
+        if (action(s.labels.reverse,IconId::Rewind)) {s.playbackRate=-1;s.playing=true;}
+        if (action(s.labels.forward,IconId::FastForward)) {s.playbackRate=1;s.playing=true;}
+        ImGui::EndPopup();
+    }
+}
+void TimeRuler(const char *id, TimeState &s, CanvasState &canvas, std::span<const Marker> markers,
+               std::uint64_t rev, EventBuffer &out, const Theme &t, float height) {
+    auto p = ImGui::GetCursorScreenPos();
+    float width = ImGui::GetContentRegionAvail().x;
+    ImGui::InvisibleButton(id, {width, height});
+    auto *d = ImGui::GetWindowDrawList();
+    d->PushClipRect(p, {p.x + width, p.y + height}, true);
+    // Quiet band behind the scale, closed by a hairline, so the ruler reads as its own strip.
+    d->AddRectFilled(p, {p.x + width, p.y + height}, ImGui::GetColorU32(ImVec4(t.colors.text.x, t.colors.text.y, t.colors.text.z, .035f)));
+    d->AddLine({p.x, p.y + height - .5f}, {p.x + width, p.y + height - .5f}, ImGui::GetColorU32(ImVec4(t.colors.text.x, t.colors.text.y, t.colors.text.z, .12f)));
+    if (!std::isfinite(canvas.scale.x) || canvas.scale.x<=0 || !std::isfinite(canvas.origin.x)) {
+        d->PopClipRect();
+        return;
+    }
+    double step = Valid(s.rate) ? static_cast<double>(s.rate.denominator)/s.rate.numerator : 1.;
+    char tickLabel[32];
+    FormatTimecode(-TicksPerSecond,s.rate,s.dropFrame,tickLabel);
+    const float labelSpacing=ImGui::CalcTextSize(tickLabel).x+8;
+    while (step * canvas.scale.x < labelSpacing) step *= 2;
+    double minor=step;
+    while (minor*.5*canvas.scale.x>=8 && minor*.5>=
+           (Valid(s.rate)?static_cast<double>(s.rate.denominator)/s.rate.numerator:1.)) minor*=.5;
+    const double right=canvas.origin.x+width/canvas.scale.x;
+    // Integer indices avoid loss of loop progress at large absolute time positions.
+    const double first=std::ceil(canvas.origin.x/minor);
+    const int ticks=(std::min)(10000,static_cast<int>(std::ceil(width/(minor*canvas.scale.x)))+1);
+    for (int i=0;i<ticks;++i) {
+        double second=(first+i)*minor;
+        if (second>=right) break;
+        float x=p.x+static_cast<float>((second-canvas.origin.x)*canvas.scale.x);
+        const bool major=std::abs(second/step-std::round(second/step))<1e-6;
+        ImVec4 tick = t.editor.ruler;
+        tick.w *= major ? .9f : .45f;
+        d->AddLine({x,p.y+height-(major?8:4)},{x,p.y+height},ImGui::GetColorU32(tick));
+        if (major) {
+            char label[32];
+            FormatTimecode(FromSeconds(second),s.rate,s.dropFrame,label);
+            d->AddText({x+3,p.y},ImGui::GetColorU32(t.editor.ruler),label);
+        }
+    }
+    const auto screen=[&](Tick tick){return p.x+static_cast<float>((Seconds(tick)-canvas.origin.x)*canvas.scale.x);};
+    const auto mouseTick=[&]{return FromSeconds(canvas.origin.x+(ImGui::GetIO().MousePos.x-p.x)/canvas.scale.x);};
+    const bool hovered=ImGui::IsItemHovered();
+    const auto mouse=ImGui::GetIO().MousePos;
+    StableId hoveredMarker=0;const Marker *activeMarker=nullptr;
+    for(const auto &m:markers) {
+        if(s.markerDrag.active && m.id==s.markerDrag.draft.target) activeMarker=&m;
+        const Tick tick=s.markerDrag.active && m.id==s.markerDrag.draft.target?s.markerDrag.draft.proposed.first:m.tick;
+        const float mx=screen(tick);
+        Diamond(d,{mx,p.y+height-13},ImGui::GetColorU32(t.editor.marker));
+        if(hovered && std::abs(mouse.x-mx)<6 && std::abs(mouse.y-(p.y+height-13))<6) hoveredMarker=m.id;
+    }
+    for(int range=0;range<2;++range) {
+        const auto value=range?s.inOut:s.work;const float y=p.y+height-(range?2.f:6.f);
+        const ImU32 color=ImGui::GetColorU32(range?t.colors.accent:t.editor.ruler);
+        d->AddLine({screen(value.first),y},{screen(value.last),y},color,2);
+        d->AddLine({screen(value.first),y-3},{screen(value.first),y+2},color,2);
+        d->AddLine({screen(value.last),y-3},{screen(value.last),y+2},color,2);
+    }
+    float x=screen(s.playhead);
+    d->AddLine({x,p.y},{x,p.y+height},ImGui::GetColorU32(t.colors.accent),1.5f);
+    // A small head on the ruler marks the current time.
+    d->AddTriangleFilled({x-5.f,p.y+1.f},{x+5.f,p.y+1.f},{x,p.y+9.f},ImGui::GetColorU32(t.colors.accent));
+    d->PopClipRect();
+    const bool editingAtFrameStart=s.markerDrag.active || s.rangeHandle;
+    detail::ResumeTerminal(s.markerDrag,rev,out);
+    if(s.markerDrag.active && s.markerDrag.draft.phase!=Phase::Commit && s.markerDrag.draft.phase!=Phase::Cancel && (!activeMarker || ImGui::IsKeyPressed(ImGuiKey_Escape))) s.markerDrag.Cancel(out);
+    if(s.rangeHandle && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        (s.rangeHandle<=2?s.work:s.inOut)=s.rangeOriginal;s.rangeHandle=0;
+    }
+    if(hovered && ImGui::IsMouseClicked(0) && !s.markerDrag.active && !s.rangeHandle) {
+        if(hoveredMarker) {
+            auto m=std::find_if(markers.begin(),markers.end(),[&](const auto &m){return m.id==hoveredMarker;});
+            s.markerDrag.Begin(m->id,rev,EditKind::Marker,{m->tick},CurrentModifiers(),out);
+        } else if(mouse.y>=p.y+height-9) {
+            float distance=6;
+            const Tick edges[]{s.work.first,s.work.last,s.inOut.first,s.inOut.last};
+            for(int i=0;i<4;++i) if(std::hypot(mouse.x-screen(edges[i]),mouse.y-(p.y+height-(i<2?6.f:2.f)))<distance) {
+                distance=std::hypot(mouse.x-screen(edges[i]),mouse.y-(p.y+height-(i<2?6.f:2.f)));s.rangeHandle=i+1;
+            }
+            if(s.rangeHandle) s.rangeOriginal=s.rangeHandle<=2?s.work:s.inOut;
+        }
+    }
+    if(s.markerDrag.active && s.markerDrag.draft.phase!=Phase::Commit && s.markerDrag.draft.phase!=Phase::Cancel) {
+        if(ImGui::IsMouseDown(0)) s.markerDrag.Update(rev,{mouseTick()},out);
+        else s.markerDrag.Commit(rev,out);
+    } else if(s.rangeHandle) {
+        auto &range=s.rangeHandle<=2?s.work:s.inOut;
+        if(ImGui::IsMouseDown(0)) {
+            if(s.rangeHandle%2) range.first=std::min(mouseTick(),range.last);
+            else range.last=std::max(mouseTick(),range.first);
+        } else s.rangeHandle=0;
+    } else if(!editingAtFrameStart && ImGui::IsItemActive() && ImGui::IsMouseDown(0) && !hoveredMarker) s.playhead=mouseTick();
+    if(hovered && ImGui::IsMouseDoubleClicked(0) && !hoveredMarker && !s.rangeHandle)
+        Action(out,0,rev,EditKind::Marker,{},Value{mouseTick()});
+    ImGui::PushID(id);
+    if(hovered && ImGui::IsMouseClicked(1)) {s.contextMarker=hoveredMarker;s.contextTime=mouseTick();ImGui::OpenPopup("ruler-actions");}
+    if(hoveredMarker) {
+        auto m=std::find_if(markers.begin(),markers.end(),[&](const auto &m){return m.id==hoveredMarker;});
+        ImGui::BeginTooltip();
+        if(s.icons) {Icon(*s.icons,IconId::Comment,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+        ImGui::TextUnformatted(m->label);ImGui::EndTooltip();
+    }
+    if(ImGui::BeginPopup("ruler-actions")) {
+        if(s.icons) {Icon(*s.icons,IconId::Marker,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+        if(s.icons) {Icon(*s.icons,IconId::Add,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+        if(ImGui::MenuItem(s.rulerLabels.addMarker)) Action(out,0,rev,EditKind::Marker,{},Value{s.contextTime});
+        if(s.contextMarker && ImGui::MenuItem(s.rulerLabels.removeMarker)) Action(out,s.contextMarker,rev,EditKind::Remove);
+        for(int i=0;i<2;++i) {
+            ImGui::PushID(i);ImGui::Separator();
+            if(s.icons) {Icon(*s.icons,IconId::WorkRange,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+            ImGui::TextUnformatted(i?s.rulerLabels.inOut:s.rulerLabels.work);
+            auto &range=i?s.inOut:s.work;double rangeStart=Seconds(range.first),rangeEnd=Seconds(range.last);
+            if(ImGui::InputDouble(s.rulerLabels.start,&rangeStart,0,0,"%.3f") && std::isfinite(rangeStart)) range.first=std::min(FromSeconds(rangeStart),range.last);
+            if(ImGui::InputDouble(s.rulerLabels.end,&rangeEnd,0,0,"%.3f") && std::isfinite(rangeEnd)) range.last=std::max(FromSeconds(rangeEnd),range.first);
+            ImGui::PopID();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+}
+Keyframe ResolveHandles(std::span<const Keyframe> keys, std::size_t index) {
+    if (index >= keys.size())
+        return {};
+    Keyframe k = keys[index];
+    if (k.handles == HandleMode::Free || k.handles == HandleMode::Aligned)
+        return k;
+    const auto &previous = index ? keys[index - 1] : k, &next = index + 1 < keys.size() ? keys[index + 1] : k;
+    double leftTime = Seconds(k.tick - previous.tick), rightTime = Seconds(next.tick - k.tick);
+    double leftSlope = leftTime > 0 ? (k.value - previous.value) / leftTime : 0,
+           rightSlope = rightTime > 0 ? (next.value - k.value) / rightTime : 0;
+    if (!index)
+        leftSlope = rightSlope;
+    if (index + 1 == keys.size())
+        rightSlope = leftSlope;
+    double slope = (leftSlope + rightSlope) * .5;
+    if (k.handles == HandleMode::AutoClamped) {
+        if (leftSlope * rightSlope <= 0)
+            slope = 0;
+        else
+            slope = std::copysign(
+                (std::min)(std::abs(slope), 3 * (std::min)(std::abs(leftSlope), std::abs(rightSlope))),
+                slope);
+    }
+    k.left = {-leftTime / 3, -leftTime / 3 * (k.handles == HandleMode::Vector ? leftSlope : slope)};
+    k.right = {rightTime / 3, rightTime / 3 * (k.handles == HandleMode::Vector ? rightSlope : slope)};
+    return k;
+}
+Keyframe MoveHandle(const Keyframe &original, bool left, Point proposed) {
+    Keyframe key = original;
+    proposed.x = left ? (std::min)(0., proposed.x) : (std::max)(0., proposed.x);
+    (left ? key.left : key.right) = proposed;
+    if (key.handles == HandleMode::Aligned) {
+        auto &opposite = left ? key.right : key.left;
+        double length = std::hypot(opposite.x, opposite.y), newLength = std::hypot(proposed.x, proposed.y);
+        if (newLength > 1e-12)
+            opposite = {-proposed.x * length / newLength, -proposed.y * length / newLength};
+    }
+    if (key.handles == HandleMode::Auto || key.handles == HandleMode::AutoClamped ||
+        key.handles == HandleMode::Vector)
+        key.handles = HandleMode::Free;
+    return key;
+}
+double Evaluate(std::span<const Keyframe> keys, Tick tick, Extrapolation extrapolation) {
+    if (keys.empty())
+        return 0;
+    if (keys.size() == 1)
+        return keys[0].value;
+    auto first = keys.front().tick, last = keys.back().tick;
+    if (extrapolation == Extrapolation::Repeat && last > first && (tick < first || tick > last)) {
+        Tick length = last - first;
+        tick = first + ((tick - first) % length + length) % length;
+    }
+    auto linear = [](const Keyframe &a, const Keyframe &b, Tick t) {
+        return a.value +
+               (b.value - a.value) * static_cast<double>(t - a.tick) / static_cast<double>(b.tick - a.tick);
+    };
+    if (tick <= first)
+        return extrapolation == Extrapolation::Linear && keys[1].tick != first
+                   ? linear(keys[0], keys[1], tick)
+                   : keys.front().value;
+    if (tick >= last)
+        return extrapolation == Extrapolation::Linear && keys[keys.size() - 2].tick != last
+                   ? linear(keys[keys.size() - 2], keys.back(), tick)
+                   : keys.back().value;
+    auto b = std::upper_bound(keys.begin(), keys.end(), tick,
+                              [](Tick t, const Keyframe &k) { return t < k.tick; });
+    auto a = b - 1;
+    if (a->interpolation == Interpolation::Constant)
+        return a->value;
+    if (a->interpolation == Interpolation::Linear)
+        return linear(*a, *b, tick);
+    auto bez = [](double a, double b, double c, double d, double u) {
+        double v = 1 - u;
+        return v * v * v * a + 3 * v * v * u * b + 3 * v * u * u * c + u * u * u * d;
+    };
+    auto resolvedA = ResolveHandles(keys, static_cast<std::size_t>(a - keys.begin())),
+         resolvedB = ResolveHandles(keys, static_cast<std::size_t>(b - keys.begin()));
+    double length = Seconds(b->tick - a->tick), target = Seconds(tick - a->tick);
+    double x1 = std::clamp(resolvedA.right.x, 0., length),
+           x2 = std::clamp(length + resolvedB.left.x, x1, length), lo = 0, hi = 1;
+    for (int i = 0; i < 40; ++i) {
+        double u = (lo + hi) * .5;
+        if (bez(0, x1, x2, length, u) < target)
+            lo = u;
+        else
+            hi = u;
+    }
+    return bez(a->value, a->value + resolvedA.right.y, b->value + resolvedB.left.y, b->value, (lo + hi) * .5);
+}
+namespace {
+Tick CurveTimeDelta(const CurveState &s,double seconds) {
+    Tick delta=FromSeconds(seconds);
+    if (s.snapToFrame && Valid(s.rate) && !s.side) {
+        const Tick tick=s.drag.draft.original.first+delta;
+        delta=FrameToTick(TickToFrame(tick,s.rate),s.rate)-s.drag.draft.original.first;
+    }
+    return delta;
+}
+Tick CurveKeyTime(const CurveState &s,Tick original,double dx) {
+    if (!s.scaling) return original+CurveTimeDelta(s,dx);
+    const double factor=std::exp2(std::clamp(dx*s.canvas.scale.x/100.,-16.,16.));
+    Tick tick=Rounded(static_cast<long double>(s.scalePivot)+(static_cast<long double>(original)-s.scalePivot)*factor);
+    return s.snapToFrame && Valid(s.rate) ? FrameToTick(TickToFrame(tick,s.rate),s.rate) : tick;
+}
+bool CurveCapacity(const CurveState &s,EventBuffer &out) {
+    if (out.storage.size()-out.count>=1+s.companionCount) return true;
+    out.overflow=true;return false;
+}
+void FinishCurve(CurveState &s,std::uint64_t revision,bool cancel,EventBuffer &out) {
+    if (!s.drag.active) return;
+    cancel |= revision!=s.drag.draft.revision || s.drag.draft.phase==Phase::Cancel;
+    const auto phase=cancel?Phase::Cancel:Phase::Commit;
+    s.drag.draft.phase=phase;
+    for (auto &drag:s.companionDrags.first(s.companionCount)) drag.draft.phase=phase;
+    if (!CurveCapacity(s,out)) return;
+    if (cancel) s.drag.Cancel(out);else s.drag.Commit(revision,out);
+    for (auto &drag:s.companionDrags.first(s.companionCount))
+        if (cancel) drag.Cancel(out);else drag.Commit(revision,out);
+    s.companionCount=0;
+}
+}
+void CurveEditor(const char *id, const CurveProvider &provider, CurveState &s, Selection &selection,
+                 EventBuffer &out, const Theme &t, ImVec2 size) {
+    if (s.fitRequested && provider.bounds) {
+        auto bounds=*provider.bounds;
+        if (bounds.max.x==bounds.min.x) {bounds.min.x-=.5;bounds.max.x+=.5;}
+        if (bounds.max.y==bounds.min.y) {bounds.min.y-=.5;bounds.max.y+=.5;}
+        Fit(s.canvas,bounds,{size.x>0?size.x:ImGui::GetContentRegionAvail().x,
+            size.y>0?size.y:ImGui::GetContentRegionAvail().y});
+    }
+    s.fitRequested=false;
+    auto view = BeginCanvas(id, s.canvas, size, t);
+    s.view = view;
+    if (s.drag.active && (provider.revision!=s.drag.draft.revision || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+        s.drag.draft.phase==Phase::Cancel || s.drag.draft.phase==Phase::Commit))
+        FinishCurve(s,provider.revision,provider.revision!=s.drag.draft.revision || ImGui::IsKeyPressed(ImGuiKey_Escape),out);
+    DrawGrid(view, s.canvas, {1, 1}, t);
+    DrawGridLabels(view, s.canvas, {1, 1}, t);
+    auto keys = provider.query
+                    ? provider.query(provider.user,
+                                     {{FromSeconds(view.visible.min.x), FromSeconds(view.visible.max.x)},
+                                      -view.visible.max.y,
+                                      -view.visible.min.y})
+                    : std::span<const Keyframe>{};
+    const bool focused=ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+    if (CommandPressed(Command::Fit,s.bindings,focused)) s.fitRequested=true;
+    bool addKey=CommandPressed(Command::AddKey,s.bindings,focused);
+    bool previousKey=CommandPressed(Command::PreviousKey,s.bindings,focused);
+    bool nextKey=CommandPressed(Command::NextKey,s.bindings,focused);
+    bool removeKeys=CommandPressed(Command::Delete,s.bindings,focused);
+    StableId previewChannel=0;
+    if (s.drag.active && !s.previewKeys.empty() && s.previewKeys.size()<keys.size()) out.overflow=true;
+    if (s.drag.active && s.drag.draft.phase!=Phase::Cancel && s.previewKeys.size()>=keys.size()) {
+        std::copy(keys.begin(),keys.end(),s.previewKeys.begin());
+        auto preview=s.previewKeys.first(keys.size());
+        auto key=std::find_if(preview.begin(),preview.end(),[&](const auto &item){return item.id==s.drag.draft.target;});
+        if (key!=preview.end()) {
+            const auto mouse=ImGui::GetIO().MousePos;
+            const double dx=(mouse.x-s.mouseStart.x)/s.canvas.scale.x,dy=-(mouse.y-s.mouseStart.y)/s.canvas.scale.y;
+            previewChannel=key->channel;
+            if (s.side) {
+                auto first=std::find_if(preview.begin(),preview.end(),[&](const auto &item){return item.channel==key->channel;});
+                auto last=std::find_if(first,preview.end(),[&](const auto &item){return item.channel!=key->channel;});
+                *key=MoveHandle(ResolveHandles({first,last},static_cast<std::size_t>(key-first)),s.side<0,
+                    {s.drag.draft.original.x+dx,s.drag.draft.original.y+dy});
+            } else {
+                key->tick=CurveKeyTime(s,s.drag.draft.original.first,dx);
+                key->value=s.drag.draft.original.x+(s.scaling?0:dy);
+            }
+            for (const auto &drag:s.companionDrags.first(s.companionCount)) {
+                auto member=std::find_if(preview.begin(),preview.end(),[&](const auto &item){return item.id==drag.draft.target;});
+                if (member!=preview.end()) {member->tick=CurveKeyTime(s,drag.draft.original.first,dx);member->value=drag.draft.original.x+(s.scaling?0:dy);}
+            }
+            std::sort(preview.begin(),preview.end(),[](const auto &a,const auto &b){return a.channel!=b.channel?a.channel<b.channel:a.tick<b.tick;});
+            keys=preview;
+        }
+    }
+    auto *d = ImGui::GetWindowDrawList();
+    StableId hit = 0;
+    int side = 0;
+    Value initial{};
+    if (!s.activeChannel && !keys.empty()) s.activeChannel=keys.front().channel;
+    std::size_t channelBegin = 0, channelEnd = 0;
+    const ImU32 halo = ImGui::GetColorU32(t.editor.canvas);
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i == channelEnd) {
+            channelBegin = i;
+            channelEnd = i + 1;
+            while (channelEnd < keys.size() && keys[channelEnd].channel == keys[i].channel)
+                ++channelEnd;
+        }
+        const auto channelKeys = keys.subspan(channelBegin, channelEnd - channelBegin);
+        const auto &k = keys[i];
+        const bool ghost=s.ghostOtherChannels && s.activeChannel && k.channel!=s.activeChannel;
+        auto curveColor=ChartColor(&t,static_cast<std::size_t>(k.channel%8));
+        if (ghost) curveColor.w*=.4f;
+        const auto resolved = ResolveHandles(channelKeys, i - channelBegin);
+        Point v{Seconds(k.tick), -k.value};
+        auto p = Screen(v, s.canvas, view.min);
+        if (provider.sample && !previewChannel && i==channelBegin) {
+            const float width=view.max.x-view.min.x;
+            const int segments=(std::max)(1,static_cast<int>(std::ceil(width/4)));
+            ImVec2 previous{};
+            for (int sample=0;sample<=segments;++sample) {
+                const float x=view.min.x+width*sample/segments;
+                const Tick tick=FromSeconds(s.canvas.origin.x+(x-view.min.x)/s.canvas.scale.x);
+                const double value=provider.sample(provider.user,k.channel,tick,s.extrapolation);
+                auto point=Screen({Seconds(tick),-value},s.canvas,view.min);
+                if (sample && std::isfinite(point.y) && std::isfinite(previous.y) && (!ghost || sample%2))
+                    d->AddLine(previous,point,ImGui::GetColorU32(curveColor),ghost?1.f:2.f);
+                previous=point;
+            }
+        }
+        if ((!provider.sample || previewChannel) && i && keys[i - 1].channel == k.channel) {
+            auto &prev = keys[i - 1];
+            ImVec2 old = Screen({Seconds(prev.tick), -prev.value}, s.canvas, view.min);
+            for (int j = 1; j <= 32; ++j) {
+                Tick tick = prev.tick + (k.tick - prev.tick) * j / 32;
+                auto next =
+                    Screen({Seconds(tick), -Evaluate(channelKeys, tick)}, s.canvas, view.min);
+                if (!ghost || (j%2)) d->AddLine(old,next,ImGui::GetColorU32(curveColor),ghost?1.f:2.f);
+                old = next;
+            }
+        }
+        auto mouse = ImGui::GetIO().MousePos;
+        if (selection.Contains(k.id) && !ghost) {
+            for (int h = -1; h <= 1; h += 2) {
+                auto offset = h < 0 ? resolved.left : resolved.right;
+                auto hp = Screen({v.x + offset.x, v.y - offset.y}, s.canvas, view.min);
+                auto stem = curveColor;
+                stem.w *= .7f;
+                d->AddLine(p, hp, ImGui::GetColorU32(stem), 1.25f);
+                d->AddCircleFilled(hp, 4.5f, halo);
+                d->AddCircle(hp, 3.5f, ImGui::GetColorU32(curveColor), 16, 1.75f);
+                if (!k.locked && std::hypot(mouse.x - hp.x, mouse.y - hp.y) < 7) {
+                    hit = k.id;
+                    side = h;
+                    initial = {k.tick, 0, h, 0, offset.x, offset.y};
+                }
+            }
+        }
+        const bool keyHovered = !k.locked && std::hypot(mouse.x - p.x, mouse.y - p.y) < 7;
+        if (ghost) d->AddQuad({p.x,p.y-5},{p.x+5,p.y},{p.x,p.y+5},{p.x-5,p.y},ImGui::GetColorU32(curveColor));
+        else KeyDiamond(d, p, ImGui::GetColorU32(selection.Contains(k.id) ? t.editor.selectedKey : t.editor.key), halo,
+                        keyHovered ? 6.f : 5.f);
+        if (!k.locked && std::hypot(mouse.x - p.x, mouse.y - p.y) < 7) {
+            hit = k.id;
+            side = 0;
+            initial = {k.tick, 0, 0, 0, k.value};
+        }
+    }
+    ImGui::PushID(id);
+    if (view.hovered && ImGui::IsMouseReleased(1) && !s.drag.active) {
+        s.contextKey=hit;
+        ImGui::OpenPopup("key settings");
+    }
+    if (ImGui::BeginPopup("key settings")) {
+        auto glyph=[&](IconId icon) {
+            if (s.icons) {Icon(*s.icons,icon,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+        };
+        glyph(IconId::Keyframe);
+        if (ImGui::MenuItem(s.labels.add,nullptr,false,s.activeChannel!=0 && !s.drag.active)) addKey=true;
+        glyph(IconId::Keyframe);
+        if (ImGui::MenuItem(s.labels.previous,nullptr,false,provider.neighbor!=nullptr)) previousKey=true;
+        glyph(IconId::Keyframe);
+        if (ImGui::MenuItem(s.labels.next,nullptr,false,provider.neighbor!=nullptr)) nextKey=true;
+        glyph(IconId::Keyframe);
+        if (ImGui::MenuItem(s.labels.remove,nullptr,false,selection.count>0 && !s.drag.active)) removeKeys=true;
+        glyph(IconId::FitView);
+        if (ImGui::MenuItem(s.labels.fit,nullptr,false,provider.bounds.has_value())) s.fitRequested=true;
+        glyph(s.ghostOtherChannels ? IconId::Eye : IconId::EyeOff);
+        imkit::Checkbox(s.labels.ghost,&s.ghostOtherChannels);
+        imkit::Checkbox(s.labels.snap,&s.snapToFrame);
+        glyph(IconId::Scale);imkit::Checkbox(s.labels.scale,&s.scaleTime);
+        if (s.icons) {
+            ImGui::BeginDisabled(s.drag.active || s.canvas.selecting);
+            for (int mode=0;mode<2;++mode) {
+                if (mode) ImGui::SameLine();
+                const bool active=s.lassoSelect==(mode==1);
+                const char *label=mode ? s.labels.lasso : s.labels.box;
+                if (active) ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (IconLabelButton(mode ? "lasso" : "box",*s.icons,
+                                    mode ? IconId::LassoSelect : IconId::BoxSelect,label,
+                                    {16*ImGui::GetFontSize()/14})) s.lassoSelect=mode==1;
+                if (active) {
+                    ImGui::PopStyleColor();
+                    const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+                    ImGui::GetWindowDrawList()->AddLine({a.x+3,b.y-2},{b.x-3,b.y-2},ImGui::GetColorU32(ImGuiCol_Text),2);
+                }
+            }
+            ImGui::EndDisabled();
+        } else imkit::Checkbox(s.labels.lasso,&s.lassoSelect);
+        if (provider.sample) {
+            int mode=static_cast<int>(s.extrapolation);
+            if (imkit::Combo(s.labels.extrapolation,&mode,s.labels.extrapolations.data(),3))
+                s.extrapolation=static_cast<Extrapolation>(mode);
+        }
+        auto key=std::find_if(keys.begin(),keys.end(),[&](const auto &value){return value.id==s.contextKey;});
+        if (key!=keys.end()) {
+            ImGui::BeginDisabled(key->locked);
+            if (ImGui::BeginMenu(s.labels.interpolation)) {
+                const auto &names=s.labels.interpolations;
+                for (int i=0;i<3;++i) if (ImGui::MenuItem(names[i],nullptr,static_cast<int>(key->interpolation)==i))
+                    Action(out,key->id,provider.revision,EditKind::KeyInterpolation,
+                        Value{0,0,0,0,static_cast<double>(key->interpolation)},Value{0,0,0,0,static_cast<double>(i)});
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu(s.labels.handles)) {
+                const auto &names=s.labels.handleModes;
+                for (int i=0;i<5;++i) {
+                    if (i>=3) glyph(i==3?IconId::TangentLinked:IconId::TangentBroken);
+                    if (ImGui::MenuItem(names[i],nullptr,static_cast<int>(key->handles)==i))
+                        Action(out,key->id,provider.revision,EditKind::KeyHandleMode,
+                            Value{0,0,0,0,static_cast<double>(key->handles)},Value{0,0,0,0,static_cast<double>(i)});
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    if (!s.drag.active && s.activeChannel) {
+        if (addKey) {
+            double value=provider.sample?provider.sample(provider.user,s.activeChannel,s.time,s.extrapolation):0.;
+            Action(out,s.activeChannel,provider.revision,EditKind::KeyInsert,{},Value{s.time,0,0,0,value});
+        }
+        if (provider.neighbor && (previousKey || nextKey)) {
+            if (auto key=provider.neighbor(provider.user,s.activeChannel,s.time,nextKey))
+                Action(out,key->id,provider.revision,EditKind::Navigate,{},Value{key->tick,0,0,key->channel});
+        }
+    }
+    if (removeKeys && !s.drag.active && selection.count) {
+        auto targets=provider.selected ? provider.selected(provider.user,selection.storage.first(selection.count)) : std::span<const Keyframe>{};
+        if (!provider.selected && selection.count==1) {
+            auto key=std::find_if(keys.begin(),keys.end(),[&](const auto &value){return selection.Contains(value.id);});
+            if (key!=keys.end()) targets={&*key,1};
+        }
+        bool available=targets.size()==selection.count;
+        if (!available || out.storage.size()-out.count<targets.size()) {out.overflow=true;available=false;}
+        for (const auto &key:targets) available &= !key.locked;
+        if (available) for (const auto &key:targets)
+            Action(out,key.id,provider.revision,EditKind::Remove,Value{key.tick,0,0,0,key.value});
+    }
+    if (view.hovered && hit && ImGui::IsMouseClicked(0) && !s.drag.active) {
+        auto active=std::find_if(keys.begin(),keys.end(),[&](const auto &key){return key.id==hit;});
+        if (active!=keys.end()) s.activeChannel=active->channel;
+        if (!selection.Contains(hit) || ImGui::GetIO().KeyCtrl) {
+            if (!selection.Set(hit,ImGui::GetIO().KeyCtrl,ImGui::GetIO().KeyCtrl)) out.overflow=true;
+            if (!selection.Contains(hit)) {EndCanvas();return;}
+        }
+        s.side = side;
+        s.mouseStart = {ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y};
+        auto members=!side && provider.selected ? provider.selected(provider.user,selection.storage.first(selection.count)) : std::span<const Keyframe>{};
+        std::size_t count=0;bool allowed=true;
+        for (const auto &member:members) if (member.id!=hit) {++count;allowed &= !member.locked;}
+        if ((!side && selection.count>1 && (!provider.selected || count+1!=selection.count)) ||
+            count>s.companionDrags.size() || out.storage.size()-out.count<1+count) {out.overflow=true;allowed=false;}
+        if (allowed) {
+            s.companionCount=0;
+            s.scaling=!side && s.scaleTime && !ImGui::GetIO().KeyAlt;
+            s.scalePivot=initial.first;
+            for (const auto &member:members) s.scalePivot=(std::min)(s.scalePivot,member.tick);
+            const auto kind=side?EditKind::Handle:ImGui::GetIO().KeyAlt?EditKind::Duplicate:s.scaling?EditKind::KeyScale:EditKind::Keyframe;
+            s.drag.Begin(hit, provider.revision, kind, initial,CurrentModifiers(), out);
+            for (const auto &member:members) if (member.id!=hit)
+                s.companionDrags[s.companionCount++].Begin(member.id,provider.revision,kind,
+                    Value{member.tick,0,0,0,member.value},CurrentModifiers(),out);
+        }
+    }
+    if (s.drag.active && s.drag.draft.phase!=Phase::Cancel && s.drag.draft.phase!=Phase::Commit && CurveCapacity(s,out)) {
+        auto proposed = s.drag.draft.original;
+        auto mouse = ImGui::GetIO().MousePos;
+        double dx = (mouse.x - s.mouseStart.x) / s.canvas.scale.x,
+               dy = -(mouse.y - s.mouseStart.y) / s.canvas.scale.y;
+        if (s.side) {
+            proposed.x += dx;
+            proposed.y += dy;
+        } else {
+            proposed.first = CurveKeyTime(s,s.drag.draft.original.first,dx);
+            if (!s.scaling) proposed.x += dy;
+        }
+        if (ImGui::IsMouseDown(0)) {
+            if (!(proposed == s.drag.draft.proposed)) s.drag.Update(provider.revision, proposed, out);
+            for (auto &drag:s.companionDrags.first(s.companionCount)) {
+                auto value=drag.draft.original;value.first=CurveKeyTime(s,drag.draft.original.first,dx);if (!s.scaling) value.x+=dy;
+                if (!(value==drag.draft.proposed)) drag.Update(provider.revision,value,out);
+            }
+        }
+    }
+    if (s.drag.active && !ImGui::IsMouseDown(0)) FinishCurve(s,provider.revision,false,out);
+    if (provider.selectionQuery && !s.drag.active && (!hit || s.canvas.selecting))
+        CanvasSelection(view,s.canvas,{provider.user,provider.revision,provider.selectionQuery},selection,out,t,s.lassoSelect);
+    EndCanvas();
+}
+void PropertyGrid(const char *id, const PropertyProvider &p, PropertyState &s, EventBuffer &out) {
+    detail::ResumeTerminal(s.drag, p.revision, out);
+    ImGui::PushID(id);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##search", s.labels.search, s.search, sizeof(s.search));
+    if (s.drag.active && (p.revision != s.drag.draft.revision || ImGui::IsKeyPressed(ImGuiKey_Escape)))
+        s.drag.Cancel(out);
+    if (ImGui::BeginTable("properties", 3,
+                          ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn(s.labels.property, ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn(s.labels.value, ImGuiTableColumnFlags_WidthStretch, 1.f);
+        ImGui::TableSetupColumn(s.labels.key, ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
+        ImGuiListClipper clipper;
+        clipper.Begin(p.count, ImGui::GetFrameHeightWithSpacing());
+        while (clipper.Step()) {
+            auto rows = p.query ? p.query(p.user, clipper.DisplayStart,
+                                          clipper.DisplayEnd - clipper.DisplayStart, s.search)
+                                : std::span<const PropertyView>{};
+            for (const auto &row : rows) {
+                ImGui::PushID(reinterpret_cast<const void *>(static_cast<std::uintptr_t>(row.id)));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const bool locked=Flag(row.flags,PropertyFlags::Locked);
+                if(row.icon!=IconId::Count && s.icons) {Icon(*s.icons,row.icon,{ImGui::GetFontSize()});ImGui::SameLine();}
+                if(row.arrayElement && s.icons) {Icon(*s.icons,IconId::ArrayProperty,{ImGui::GetFontSize()});ImGui::SameLine();}
+                ImGui::Text("%s%s%s%s%s", Flag(row.flags,PropertyFlags::Favorite)?"* ":"",
+                    row.label,Flag(row.flags,PropertyFlags::Modified)?s.labels.modifiedSuffix:"",
+                    Flag(row.flags,PropertyFlags::Override)?s.labels.overrideSuffix:"",locked?s.labels.lockedSuffix:"");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", row.category);
+                if (ImGui::BeginPopupContextItem("property state")) {
+                    for (auto flag:{PropertyFlags::Favorite,PropertyFlags::Locked,PropertyFlags::Override}) {
+                        const char *label=flag==PropertyFlags::Favorite?s.labels.favorite:flag==PropertyFlags::Locked?s.labels.locked:s.labels.overrideValue;
+                        bool enabled=Flag(row.flags,flag);
+                        if (ImGui::MenuItem(label,nullptr,enabled))
+                            Action(out,row.id,p.revision,EditKind::Toggle,
+                                Value{0,0,0,0,static_cast<double>(flag),enabled?1.:0.},
+                                Value{0,0,0,0,static_cast<double>(flag),enabled?0.:1.});
+                    }
+                    if(row.arrayElement && p.neighbor) for(int direction:{-1,1}) {
+                        const auto *other=p.neighbor(p.user,row.id,direction);
+                        const bool enabled=!locked && other && other->arrayElement && !Flag(other->flags,PropertyFlags::Locked);
+                        if(s.icons) {Icon(*s.icons,direction<0?IconId::ArrowUp:IconId::ArrowDown,{ImGui::GetFontSize()});ImGui::SameLine();}
+                        if(ImGui::MenuItem(direction<0?s.labels.moveUp:s.labels.moveDown,nullptr,false,enabled))
+                            Action(out,row.id,p.revision,EditKind::Reorder,{},Value{0,0,direction,other->id});
+                    }
+                    ImGui::EndPopup();
+                }
+                ImGui::TableNextColumn();
+                ImGui::BeginDisabled(Flag(row.flags, PropertyFlags::Locked));
+                double draft = s.drag.active && s.drag.draft.target == row.id ? s.draft : row.value;
+                bool changed =
+                    ImGui::DragScalar("##value", ImGuiDataType_Double, &draft, .01f, nullptr, nullptr,
+                                      "%.3f");
+                if(Flag(row.flags,PropertyFlags::Mixed) && !ImGui::IsItemActive()) {
+                    auto *draw=ImGui::GetWindowDrawList();const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+                    draw->PushClipRect({a.x+3,a.y+2},{b.x-3,b.y-2},true);
+                    draw->AddRectFilled(a,b,ImGui::GetColorU32(ImGui::IsItemHovered()?ImGuiCol_FrameBgHovered:ImGuiCol_FrameBg));
+                    draw->AddText({a.x+ImGui::GetStyle().FramePadding.x,a.y+ImGui::GetStyle().FramePadding.y},ImGui::GetColorU32(ImGuiCol_Text),s.labels.mixed);
+                    draw->PopClipRect();
+                }
+                if (ImGui::IsItemActivated()) {
+                    s.draft = row.value;
+                    s.drag.Begin(row.id, p.revision, EditKind::Property, Value{0, 0, 0, 0, row.value},
+                                 CurrentModifiers(), out);
+                }
+                if (changed && s.drag.active) {
+                    s.draft = draft;
+                    s.drag.Update(p.revision, Value{0, 0, 0, 0, draft}, out);
+                }
+                if (ImGui::IsItemDeactivated() && s.drag.active && s.drag.draft.target == row.id)
+                    s.drag.Commit(p.revision, out);
+                if (ImGui::BeginPopupContextItem("actions")) {
+                    const auto glyph=[&](IconId icon){if(s.icons) {Icon(*s.icons,icon,{ImGui::GetFontSize()});ImGui::SameLine();}};
+                    glyph(IconId::Copy);
+                    if(ImGui::MenuItem(s.labels.copy)) {char text[64];std::snprintf(text,sizeof(text),"%.17g",row.value);ImGui::SetClipboardText(text);}
+                    glyph(IconId::Paste);
+                    if(ImGui::MenuItem(s.labels.paste)) {
+                        const char *text=ImGui::GetClipboardText();char *end=nullptr;
+                        if(text) {
+                            const double value=std::strtod(text,&end);
+                            const bool parsed=end!=text;
+                            while(end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+                            if(parsed && end && !*end && std::isfinite(value)) Action(out,row.id,p.revision,EditKind::Property,Value{0,0,0,0,row.value},Value{0,0,0,0,value});
+                        }
+                    }
+                    glyph(IconId::Reset);
+                    if (ImGui::MenuItem(s.labels.reset))
+                        Action(out, row.id, p.revision, EditKind::Reset, Value{0, 0, 0, 0, row.value},
+                               Value{0, 0, 0, 0, row.defaultValue});
+                    glyph(IconId::Star);
+                    if (ImGui::MenuItem(s.labels.favorite, nullptr, Flag(row.flags, PropertyFlags::Favorite)))
+                        Action(out, row.id, p.revision, EditKind::Toggle, Value{0, 0, 0, 0, 8},
+                               Value{0, 0, 0, 0, 8, Flag(row.flags, PropertyFlags::Favorite) ? 0. : 1.});
+                    glyph(IconId::ArrowLeft);
+                    if (ImGui::MenuItem(s.labels.previousKey))
+                        Action(out, row.id, p.revision, EditKind::PropertyKey, {},
+                               Value{s.time,0,static_cast<Tick>(PropertyKeyAction::Previous),0,row.value});
+                    if (ImGui::MenuItem(s.labels.nextKey))
+                        Action(out, row.id, p.revision, EditKind::PropertyKey, {},
+                               Value{s.time,0,static_cast<Tick>(PropertyKeyAction::Next),0,row.value});
+                    ImGui::EndPopup();
+                }
+                ImGui::TableNextColumn();
+                if (s.icons ? IconButton("keyframe",*s.icons,IconId::Keyframe,
+                        Flag(row.flags,PropertyFlags::Keyed)?s.labels.removeKey:s.labels.addKey,{ImGui::GetFontSize()})
+                    : ImGui::SmallButton(Flag(row.flags, PropertyFlags::Keyed) ? "<>" : "+"))
+                    Action(out, row.id, p.revision, EditKind::PropertyKey, {},
+                        Value{s.time,0,static_cast<Tick>(Flag(row.flags,PropertyFlags::Keyed)?
+                            PropertyKeyAction::Remove:PropertyKeyAction::Add),0,row.value});
+                ImGui::EndDisabled();
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PopID();
+}
+void AssetBrowser(const char *id, const AssetProvider &p, AssetState &s, Selection &selection,
+                  EventBuffer &out, std::span<const char *const> path) {
+    const bool wasRenaming=s.renameTransaction.active;
+    detail::ResumeTerminal(s.renameTransaction,p.revision,out);
+    if (wasRenaming && !s.renameTransaction.active) s.renaming=0;
+    bool renameSeen=false;
+    ImGui::PushID(id);
+    auto glyph=[&](IconId icon) {
+        if (s.icons) {Icon(*s.icons,icon,{16*ImGui::GetFontSize()/14});ImGui::SameLine();}
+    };
+    for (std::size_t i=0;i<path.size();++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton(path[i]))
+            Action(out,i<s.breadcrumbIds.size()?s.breadcrumbIds[i]:0,p.revision,EditKind::Navigate,{},
+                   Value{static_cast<Tick>(i)});
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::TextUnformatted("/");
+        ImGui::SameLine();
+    }
+    if (!path.empty())
+        ImGui::NewLine();
+    glyph(IconId::Search);ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##search",s.labels.search,s.search,sizeof(s.search));
+    if (s.icons) {
+        for (int mode=0;mode<2;++mode) {
+            if (mode) ImGui::SameLine();
+            const bool active=s.grid==(mode==0);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button,ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (IconLabelButton(mode ? "list" : "grid",*s.icons,mode ? IconId::List : IconId::Grid,
+                                mode ? s.labels.list : s.labels.grid,{16*ImGui::GetFontSize()/14})) s.grid=mode==0;
+            if (active) {
+                ImGui::PopStyleColor();
+                const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddLine({a.x+3,b.y-2},{b.x-3,b.y-2},ImGui::GetColorU32(ImGuiCol_Text),2);
+            }
+        }
+    } else imkit::Checkbox(s.labels.grid,&s.grid);
+    if (p.filteredCount) {
+        if (ImGui::GetContentRegionAvail().x<250) ImGui::NewLine();else ImGui::SameLine();
+        glyph(IconId::Tag);ImGui::SetNextItemWidth(100);
+        ImGui::InputTextWithHint("##tag",s.labels.tag,s.tag,sizeof(s.tag));
+        ImGui::SameLine();glyph(IconId::Filter);
+        ImGui::SetNextItemWidth((std::max)(100.f,ImGui::CalcTextSize(s.labels.statuses[0]).x+ImGui::GetFrameHeight()+2*ImGui::GetStyle().FramePadding.x));
+        int status=s.status+1;
+        if (imkit::Combo("##status",&status,s.labels.statuses.data(),6)) s.status=status-1;
+    }
+    const int count=p.filteredCount ? (std::max)(0,p.filteredCount(p.user,s.search)) : p.count;
+    int columns = s.grid ? (std::max)(1, static_cast<int>(ImGui::GetContentRegionAvail().x / 120)) : 1;
+    if (ImGui::BeginChild("items")) {
+        ImGuiListClipper clipper;
+        clipper.Begin((count + columns - 1) / columns, s.grid ? 144.f : ImGui::GetFrameHeightWithSpacing());
+        while (clipper.Step()) {
+            auto assets = p.query ? p.query(p.user, clipper.DisplayStart * columns,
+                                            (clipper.DisplayEnd - clipper.DisplayStart) * columns, s.search)
+                                  : std::span<const AssetView>{};
+            int column = 0;
+            for (const auto &a : assets) {
+                if (column++ % columns)
+                    ImGui::SameLine();
+                ImGui::PushID(reinterpret_cast<const void *>(static_cast<std::uintptr_t>(a.id)));
+                const auto assetTop=ImGui::GetCursorScreenPos();
+                ImGui::BeginGroup();
+                if (s.grid && a.thumbnail.GetTexID())
+                    ImGui::Image(a.thumbnail, {104, 70});
+                else if (s.grid) {
+                    // Placeholder tile: a quiet filled card with a media glyph instead of an empty outline.
+                    auto pos = ImGui::GetCursorScreenPos();
+                    const float rounding = ImGui::GetStyle().FrameRounding;
+                    auto *tile = ImGui::GetWindowDrawList();
+                    tile->AddRectFilled(pos, {pos.x + 104, pos.y + 70}, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+                    tile->AddRect(pos, {pos.x + 104, pos.y + 70}, ImGui::GetColorU32(ImGuiCol_Border, .6f), rounding);
+                    if (s.icons) {
+                        const float size = 24 * ImGui::GetFontSize() / 14;
+                        ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                        tint.w *= .4f;
+                        ImGui::SetCursorScreenPos({pos.x + (104 - size) * .5f, pos.y + (70 - size) * .5f});
+                        Icon(*s.icons, IconId::Image, {size, tint});
+                        ImGui::SetCursorScreenPos(pos);
+                    }
+                    ImGui::Dummy({104, 70});
+                }
+                auto beginRename=[&] {
+                    if (s.renameTransaction.active) return;
+                    Event event{a.id,p.revision,Phase::Begin,EditKind::Rename};
+                    if (std::snprintf(event.originalText.data(),event.originalText.size(),"%s",a.label)>=static_cast<int>(event.originalText.size())) {
+                        out.overflow=true;return;
+                    }
+                    event.proposedText=event.originalText;
+                    if (!out.Push(event)) return;
+                    s.renameTransaction.draft=event;s.renameTransaction.active=true;
+                    std::snprintf(s.rename,sizeof(s.rename),"%s",a.label);s.renaming=a.id;s.renameFocus=true;
+                };
+                if (s.renaming == a.id) {
+                    renameSeen=true;
+                    if (!s.renameTransaction.active) beginRename();
+                    ImGui::SetNextItemWidth(s.grid ? 104.f : -1.f);
+                    auto &tx=s.renameTransaction;
+                    if (tx.active && tx.draft.phase!=Phase::Commit && tx.draft.phase!=Phase::Cancel) {
+                        if (s.renameFocus) {ImGui::SetKeyboardFocusHere();s.renameFocus=false;}
+                        const bool accept=ImGui::InputText("##rename",s.rename,sizeof(s.rename),
+                            ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_AutoSelectAll);
+                        if (std::string_view(tx.draft.proposedText.data())!=s.rename) {
+                            auto event=tx.draft;event.phase=Phase::Update;
+                            std::snprintf(event.proposedText.data(),event.proposedText.size(),"%s",s.rename);
+                            if (out.Push(event)) tx.draft=event;
+                        }
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) tx.Cancel(out);
+                        else if (accept) {
+                            std::snprintf(tx.draft.proposedText.data(),tx.draft.proposedText.size(),"%s",s.rename);
+                            tx.Commit(p.revision,out);
+                        }
+                        if (!tx.active) s.renaming=0;
+                    } else {
+                        ImGui::TextUnformatted(s.rename);
+                    }
+                } else if (ImGui::Selectable(a.label, selection.Contains(a.id), 0, {s.grid ? 104.f : 0, 0})) {
+                    selection.Set(a.id, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyCtrl);
+                    Action(out, a.id, p.revision, EditKind::Select);
+                }
+                if (ImGui::BeginPopupContextItem("asset actions")) {
+                    glyph(IconId::Edit);
+                    if (ImGui::MenuItem(s.labels.rename)) {beginRename();renameSeen=true;}
+                    glyph(IconId::Duplicate);
+                    if (ImGui::MenuItem(s.labels.duplicate))
+                        Action(out, a.id, p.revision, EditKind::Duplicate);
+                    glyph(IconId::Delete);
+                    if (ImGui::MenuItem(s.labels.remove))
+                        Action(out, a.id, p.revision, EditKind::Remove);
+                    ImGui::EndPopup();
+                }
+                if (ImGui::BeginDragDropSource()) {
+                    ImGui::SetDragDropPayload("IMKIT_ASSET", &a.id, sizeof(a.id));
+                    ImGui::TextUnformatted(a.label);
+                    ImGui::EndDragDropSource();
+                }
+                if (a.tag && *a.tag) {
+                    if (!s.grid) ImGui::SameLine();
+                    ImGui::TextDisabled("%s",a.tag);
+                }
+                if (a.status != AssetStatus::Ready) {
+                    if (!s.grid) ImGui::SameLine();
+                    constexpr IconId statusIcons[]{IconId::Success,IconId::Loading,IconId::ProxyMedia,IconId::Warning,IconId::Error};
+                    glyph(statusIcons[static_cast<int>(a.status)]);
+                    ImGui::TextDisabled("%s",s.labels.statuses[static_cast<int>(a.status)+1]);
+                }
+                if (s.grid) {
+                    ImGui::SetCursorScreenPos({assetTop.x,assetTop.y+144-ImGui::GetStyle().ItemSpacing.y});
+                    ImGui::Dummy({104,0});
+                }
+                ImGui::EndGroup();
+                ImGui::PopID();
+            }
+        }
+    }
+    ImGui::EndChild();
+    if (s.renameTransaction.active && !renameSeen && s.renameTransaction.draft.phase!=Phase::Commit &&
+        s.renameTransaction.draft.phase!=Phase::Cancel) s.renameTransaction.Cancel(out);
+    if (!s.renameTransaction.active && (wasRenaming || renameSeen)) s.renaming=0;
+    ImGui::PopID();
+}
+bool Splitter(const char *id, float &pane, float total, bool vertical, float minimum) {
+    const float thickness=(std::max)(1.f,ImGui::GetStyle().ItemSpacing.x);
+    ImGui::InvisibleButton(id, vertical ? ImVec2{thickness, (std::max)(1.f,ImGui::GetContentRegionAvail().y)}
+                                        : ImVec2{(std::max)(1.f,ImGui::GetContentRegionAvail().x), thickness},ImGuiButtonFlags_EnableNav);
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+    float delta=0;
+    if(ImGui::IsItemFocused()) {
+        ImGui::SetNavCursorVisible(true);
+        if(ImGui::IsKeyPressed(vertical?ImGuiKey_LeftArrow:ImGuiKey_UpArrow))delta-=ImGui::GetFontSize();
+        if(ImGui::IsKeyPressed(vertical?ImGuiKey_RightArrow:ImGuiKey_DownArrow))delta+=ImGui::GetFontSize();
+    }
+    if (!ImGui::IsItemActive() && delta==0)
+        return false;
+    if(!std::isfinite(total)||total<=0)return false;
+    if(ImGui::IsItemActive() && ImGui::IsMouseDown(0))delta+=vertical?ImGui::GetIO().MouseDelta.x:ImGui::GetIO().MouseDelta.y;
+    pane = std::clamp(pane + delta,
+                      (std::min)(minimum, total * .5f), (std::max)(minimum, total - minimum));
+    return true;
+}
+void StatusBar(std::string_view text, const Selection &selection) {
+    ImGui::Separator();
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::SameLine();
+    ImGui::Text("%zu selected", selection.count);
+}
+} // namespace imkit::editor

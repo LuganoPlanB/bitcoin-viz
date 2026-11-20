@@ -196,7 +196,8 @@ struct Options {
     std::int64_t after = 0, limit = 100;
     std::optional<std::int64_t> render_after;
     double peer_interval = 2, reconcile_interval = 15, duration = 0;
-    bool once = false;
+    bool once = false, allow_rpc_polling = false;
+    std::function<void(const std::string&)> report;
 };
 
 // Event stream, unlike Gource's persistent current-scene projection.

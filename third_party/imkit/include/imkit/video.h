@@ -1,0 +1,414 @@
+#pragma once
+#include <imkit/editor_canvas.h>
+namespace imkit::video {
+using editor::StableId;
+using editor::Tick;
+enum class TrackKind { Video, Audio, Caption, Effect, Adjustment, Group };
+enum class TrackControl { Visible, Mute, Solo, Locked, Record, Target, Source, Expanded, Height };
+enum class Tool { Select, Razor, Ripple, Roll, Slip, Slide, Hand };
+constexpr std::uint32_t TimelineToolBit(Tool tool) {
+    return 1u << static_cast<unsigned>(tool);
+}
+struct TimelineOptions {
+    std::uint32_t visibleTools = 0x7fu;
+    double minimumPixelsPerSecond = 8.0;
+    double maximumPixelsPerSecond = 640.0;
+    bool showOverview = true;
+    bool showBottomZoom = true;
+};
+struct AudioBucket;
+enum class PlacementMode { Insert, Overwrite, Append };
+enum class WaveformStatus { Pending, Ready, Error };
+struct WaveformQuery {
+    StableId source = 0;
+    editor::Range range{}; // Source time, including trim and playback speed.
+    int channel = 0, pixels = 0;
+};
+struct WaveformView {
+    std::span<const AudioBucket> buckets;
+    editor::Range range{}; // Actual source interval covered uniformly by buckets.
+    WaveformStatus status = WaveformStatus::Pending;
+};
+struct WaveformProvider {
+    void *user = nullptr;
+    WaveformView (*query)(void *, const WaveformQuery &) = nullptr;
+};
+struct WaveformOptions { float gain = 1; bool stereo = true, zeroLine = true; };
+struct TrackView {
+    StableId id = 0;
+    const char *label = "";
+    TrackKind kind = TrackKind::Video;
+    float height = 64;
+    bool visible = true, mute = false, solo = false, locked = false, record = false, source = false,
+         target = true, expanded = true;
+};
+float TrackExtent(const TrackView &track); // Expanded: at least 64 px; collapsed: 32 px.
+struct TrackLayout {
+    std::span<const TrackView> tracks;
+    double top = 0; // Absolute pixel offset of the first returned track.
+};
+enum class TransitionKind { None, Dissolve, Fade, Crossfade };
+enum class FadeCurve { Linear, EaseIn, EaseOut };
+struct FadeView {
+    Tick inDuration=0, outDuration=0;
+    FadeCurve inCurve=FadeCurve::Linear, outCurve=FadeCurve::Linear;
+};
+double EvaluateFade(Tick localTick, Tick duration, const FadeView &fade);
+enum class TrackAction { Add, Duplicate, Remove, Reorder };
+enum class ClipboardAction { Copy, Cut, Paste };
+struct CutTransitionView {
+    StableId left=0, right=0;
+    Tick duration=0, limit=0;
+    TransitionKind kind=TransitionKind::Dissolve;
+    bool locked=false;
+    const char *rejection="No adjacent editable clip or insufficient media handles";
+};
+// Optional UI contracts. Providers and all returned views remain host owned.
+struct TimelineEditingProvider {
+    void *user=nullptr;
+    const FadeView *(*fades)(void *,StableId)=nullptr;
+    CutTransitionView (*cut)(void *,StableId)=nullptr;
+    std::span<const StableId> (*box)(void *,editor::Range,double top,double bottom)=nullptr;
+    StableId (*destination)(void *,StableId source,StableId anchor,StableId hovered)=nullptr;
+    bool (*canMove)(void *,std::span<const StableId>,Tick delta,StableId anchor,StableId hovered)=nullptr;
+    std::size_t (*trackClipCount)(void *,StableId)=nullptr;
+    StableId (*trackAfter)(void *,StableId)=nullptr; // Zero denotes the end of the track list.
+};
+// Optional host-owned controls rendered on the same fixed-height row as the
+// timeline tools. Callbacks run during Timeline() and must not retain ImGui or
+// provider state beyond the current frame.
+struct TimelineToolbarProvider {
+    void (*leading)(void *) = nullptr;
+    void (*trailing)(void *) = nullptr;
+};
+struct TimelineExternalDropPreview {
+    editor::Range range{};
+    TrackKind kind = TrackKind::Video;
+    const char *label = ""; // Borrowed for the current Timeline call only.
+    bool valid = false;
+};
+struct TimelineExternalDropRoute {
+    const char *payloadType = "";
+    void *user = nullptr;
+    bool (*canDrop)(void *,StableId track,Tick at,const void *data,std::size_t size)=nullptr;
+    void (*drop)(void *,StableId track,Tick at,const void *data,std::size_t size,bool delivery)=nullptr;
+    // Optional exact candidate range. When supplied, Timeline replaces the
+    // native whole-row target rectangle with a clip-shaped preview.
+    TimelineExternalDropPreview (*preview)(void *,StableId track,Tick at,const void *data,std::size_t size)=nullptr;
+};
+struct EnvelopePoint {StableId id=0;Tick tick=0;double gain=1;bool locked=false;};
+// Sorted clip-local points; empty envelope evaluates to unity gain.
+double EvaluateEnvelope(std::span<const EnvelopePoint> points,Tick tick);
+struct ClipView {
+    StableId id = 0, track = 0, linked = 0, group = 0;
+    const char *label = "";
+    Tick start = 0, duration = 0, sourceIn = 0;
+    double speed = 1;
+    ImTextureRef thumbnail{};
+    bool proxy = false, missing = false, offline = false, locked = false;
+    std::span<const float> waveform;
+    std::span<const editor::Keyframe> keys; // Sorted by clip-local tick; borrowed draw/edit keys.
+    Tick transitionIn = 0, transitionOut = 0;
+    std::span<const AudioBucket> audioBuckets;
+    TransitionKind transitionInKind=TransitionKind::Dissolve,transitionOutKind=TransitionKind::Dissolve;
+    std::span<const EnvelopePoint> envelope;
+    StableId keyChannel=0; // Explicit insertion channel, including when keys is empty.
+    double keyDefaultValue=0;
+    std::span<const editor::Keyframe> keyEvaluation; // Optional full sorted channel for interpolation outside visible keys.
+    StableId audioSource = 0;
+    int audioChannels = 1;
+    FadeView fades;
+    CutTransitionView outgoingTransition;
+};
+struct TransitionEdit {
+    Tick inDuration=0,outDuration=0;
+    bool valid=false;
+};
+// Delta changes the selected duration, not the clip position. The other end is preserved.
+TransitionEdit EditTransition(const ClipView &clip, bool end, Tick durationDelta);
+// Emits a complete Begin/Commit pair; clip/track ownership remains with the host.
+void TransitionPicker(const char *id, const ClipView &clip, std::uint64_t revision,
+                      editor::EventBuffer &events, bool trackLocked=false);
+struct TransitionLabels {
+    const char *title="Transition",*in="Transition in",*out="Transition out";
+    const char *inDuration="Transition in duration",*outDuration="Transition out duration";
+    std::array<const char *,4> kinds{"None","Dissolve","Fade","Crossfade"};
+};
+struct TransitionPickerOptions {const IconAtlas *icons=nullptr;TransitionLabels labels;};
+void TransitionPicker(const char *id,const ClipView &clip,std::uint64_t revision,
+                      editor::EventBuffer &events,bool trackLocked,const TransitionPickerOptions &options);
+struct ClipConstraints {
+    Tick mediaFirst = 0, mediaLast = editor::TicksPerSecond * 3600, minimumDuration = 1;
+};
+struct ClipEdit {
+    Tick start = 0, duration = 0, sourceIn = 0;
+    bool valid = false;
+    Tick rippleDelta = 0;
+};
+ClipEdit EditClip(const ClipView &clip, editor::EditKind kind, Tick delta, ClipConstraints constraints);
+// Removed clips must be sorted by track/start with non-overlapping positive ranges.
+// Returns the surviving clip position after closing preceding removed intervals; nullopt on invalid/overlapping input.
+std::optional<Tick> RippleDeletePosition(const ClipView &survivor,std::span<const ClipView> removed);
+// Maximum total duration of a transition centered on an adjacent cut. Each clip
+// supplies half of the overlap outside its trimmed source range. Zero rejects
+// gaps, different tracks, locked clips and invalid media ranges.
+Tick CenteredTransitionLimit(const ClipView &left, const ClipView &right,
+                             ClipConstraints leftBounds, ClipConstraints rightBounds);
+struct PairEdit {
+    ClipEdit left, right;
+    bool valid = false;
+};
+// Requires positive-duration adjacent clips on the same track; overflowing cuts are invalid.
+PairEdit RollClips(const ClipView &left, const ClipView &right, Tick delta, ClipConstraints leftBounds,
+                   ClipConstraints rightBounds);
+struct TripleEdit {
+    ClipEdit previous, current, next;
+    bool valid = false;
+};
+// All three clips must be adjacent on the same track with representable cut positions.
+TripleEdit SlideClip(const ClipView &previous, const ClipView &current, const ClipView &next, Tick delta,
+                     ClipConstraints previousBounds, ClipConstraints currentBounds,
+                     ClipConstraints nextBounds);
+struct SplitResult {
+    ClipEdit left, right;
+    bool valid = false;
+};
+SplitResult SplitClip(const ClipView &clip, Tick tick, ClipConstraints constraints);
+struct TimelineProvider {
+    void *user = nullptr;
+    std::uint64_t revision = 0;
+    int trackCount = 0;
+    std::span<const TrackView> (*tracks)(void *, int first, int count) = nullptr;
+    std::span<const ClipView> (*clips)(void *, StableId track, editor::Range visible) = nullptr;
+    ClipConstraints (*constraints)(void *, StableId clip) = nullptr;
+    std::span<const editor::SnapCandidate> (*snap)(void *, editor::Range visible) = nullptr;
+    std::span<const editor::Marker> markers;
+    struct Neighbors {
+        const ClipView *previous = nullptr, *next = nullptr;
+    };
+    Neighbors (*neighbors)(void *, StableId clip) = nullptr;
+    // Includes linked/group members; host marks members of locked tracks as locked.
+    std::span<const ClipView> (*selected)(void *, std::span<const StableId>) = nullptr;
+    // Optional indexed variable-height query. Returned rows cover [firstPixel,lastPixel].
+    TrackLayout (*layout)(void *, double firstPixel, double lastPixel) = nullptr;
+    double totalHeight = 0;
+    editor::Range contentRange{}; // Host-maintained total time extent for Fit.
+    // Optional host preflight for nonlocal constraints; called only when starting an edit.
+    bool (*canBeginEdit)(void *,StableId clip,editor::EditKind kind)=nullptr;
+    // Optional indexed existence/lock lookup for active clip-body transactions, including offscreen owners.
+    bool (*isEditable)(void *,StableId clip)=nullptr;
+    // Optional total-duration limit, including neighboring media handles. Called
+    // during transition edits; the host must also validate committed edits.
+    // Enables centered Dissolve/Crossfade overlap bands and half-duration handles.
+    Tick (*transitionLimit)(void *,StableId clip,bool outgoing)=nullptr;
+    WaveformProvider waveform;
+    TimelineToolbarProvider toolbar;
+    TimelineEditingProvider editing;
+    // Optional host-owned payload routes. Data is borrowed for this call only.
+    std::span<const TimelineExternalDropRoute> externalDrops;
+    // Draw application-specific decoration without taking over clip interaction.
+    void (*drawClipOverlay)(void *,StableId,const editor::Value &,ImVec2,ImVec2)=nullptr;
+};
+struct TrackLabels {
+    // Borrowed UTF-8 strings. Array order follows Visible through Source in TrackControl.
+    std::array<const char *,7> buttons{"V","M","S","L","R","T","P"};
+    std::array<const char *,7> names{"Visible","Mute","Solo","Locked","Record armed","Target track","Source patch"};
+    const char *controls="Controls", *height="Track height", *on="On", *off="Off";
+    const char *expand="Expand track", *collapse="Collapse track";
+    std::array<const char *,6> kinds{"Video track","Audio track","Caption track","Effect track","Adjustment track","Group track"};
+};
+struct TimelineLabels {
+    std::array<const char *,7> tools{"Select","Razor","Ripple","Roll","Slip","Slide","Hand"};
+    std::array<const char *,7> tooltips{"Select clips","Razor: split clip at cursor","Ripple: trim and shift following clips",
+        "Roll: move the boundary between adjacent clips","Slip: change source range without moving clip","Slide: move clip and trim its neighbors","Pan timeline"};
+    const char *snap="Snap", *magnet="Magnet", *magnetTooltip="Magnet: snap to timeline targets";
+    const char *options="Timeline options", *follow="Follow playhead", *frameGrid="Frame grid";
+    std::array<const char *,3> followModes{"Off","Smooth","Page"};
+    std::array<const char *,7> snapKinds{"Frame","Playhead","Marker","Clip edge","Keyframe","In/out","Selection edge"};
+    const char *fit="Fit", *fitTooltip="Fit timeline";
+    const char *unlink="Unlink clip",*ungroup="Remove from group";
+    const char *linkSelection="Link selected clips",*groupSelection="Group selected clips";
+    TransitionLabels transitions;
+    const char *duration="Duration",*speed="Speed",*linked="Linked",*group="Group";
+    const char *proxy="Proxy",*missing="Missing media",*offline="Offline media",*locked="Locked";
+    const char *addEnvelope="Add envelope point",*removeEnvelope="Remove envelope point";
+    const char *envelope="Volume envelope",*dragKey="Drag keyframe time";
+    const char *rippleDelete="Ripple delete selected clips",*trimStart="Trim start",*trimEnd="Trim end",*addCaption="Add caption at or after playhead";
+    const char *zoom="Timeline zoom",*zoomOut="Zoom out",*zoomIn="Zoom in";
+};
+struct TimelineState {
+    struct MemberDrag {
+        ClipView original{};
+        editor::Transaction transaction;
+        ClipView previous{},next{};
+        editor::Transaction previousTransaction,nextTransaction;
+    };
+    editor::CanvasState canvas{{0, 0}, {100, 1}};
+    editor::Transaction drag;
+    editor::TimeState time;
+    Tool tool = Tool::Select;
+    bool snapping = true, magnet = true;
+    double verticalScroll = 0;
+    editor::Point mouseStart{};
+    ClipView original{};
+    editor::SnapResult guide{};
+    float headerWidth = 172, rowHeight = 66;
+    StableId hovered = 0;
+    editor::CanvasView view{};
+    StableId editingCaption = 0;
+    char caption[256]{};
+    editor::Transaction previousDrag, nextDrag;
+    ClipView previousOriginal{}, nextOriginal{};
+    std::span<MemberDrag> memberDrags;
+    std::size_t memberCount = 0;
+    editor::Transaction heightDrag;
+    const IconAtlas *icons = nullptr; // Non-owning host atlas.
+    bool snapToFrame = false;
+    editor::AutoScroll autoScroll = editor::AutoScroll::Smooth;
+    std::span<const editor::Binding> bindings;
+    std::uint32_t snapKinds = 0x7f; // Bit positions are editor::SnapKind.
+    editor::Transaction transitionDrag;
+    bool transitionEnd=false;
+    double transitionMouseStart=0;
+    editor::Transaction envelopeDrag;
+    editor::Point envelopeMouseStart{};
+    Tick envelopeContextTick=0;
+    editor::Transaction captionDrag;
+    bool captionFocus=false;
+    editor::Transaction keyDrag;
+    double keyMouseStart=0;
+    std::span<editor::Transaction> keyCompanions; // Host scratch, stable during a gesture.
+    std::size_t keyCompanionCount=0;
+    editor::Selection *keySelection=nullptr; // Optional non-owning selection distinct from clips.
+    TrackLabels trackLabels;
+    TimelineLabels labels;
+    WaveformOptions waveformOptions;
+    int overviewDrag = 0; // 0 body, -1 left range edge, +1 right range edge.
+    editor::Selection *trackSelection=nullptr;
+    editor::Transaction fadeDrag, cutDrag;
+    bool fadeEnd=false;
+    double fadeMouseStart=0;
+    bool boxSelecting=false, moveRejected=false;
+    editor::Point boxStart{};
+    std::uint64_t boxRevision=0;
+    StableId hoveredTrack=0, moveTrack=0;
+    PlacementMode pasteMode=PlacementMode::Insert;
+    bool confirmTrackDelete=false;
+    std::size_t deletingClipCount=0;
+    StableId renamingTrack=0;
+    std::uint64_t renameRevision=0;
+    std::array<char,256> trackName{};
+    TimelineOptions options;
+};
+void FadePicker(const char *id,const ClipView &clip,const FadeView &fade,std::uint64_t revision,
+                editor::EventBuffer &events,bool trackLocked=false);
+// A shelf item emits an ImGui drag payload accepted by Timeline boundary bands.
+void TransitionShelf(const char *id, const IconAtlas *icons=nullptr);
+// Resolves both moving edges; ignores every selected clip and filters disabled kinds.
+editor::SnapResult ResolveTimelineSnap(const TimelineState &state, Tick delta,
+    std::span<const editor::SnapCandidate> candidates, std::span<const StableId> movingIds);
+void Timeline(const char *id, const TimelineProvider &provider, TimelineState &state,
+              editor::Selection &selection, editor::EventBuffer &events, const Theme &theme,
+              ImVec2 size = {0, 300});
+enum class MonitorMetadataPreset { Off, Clip, Details };
+struct MonitorOptions {
+    bool safeArea = true, guides = false, showTimecode = true, transform = false;
+    const char *label = "";
+    ImVec2 anchor{.5f, .5f};
+    bool flipY = false;
+    MonitorMetadataPreset metadataPreset=MonitorMetadataPreset::Clip;
+    const char *clipName="", *markerComment=""; // Borrowed host UTF-8 strings.
+    std::span<const char *const> metadata; // Extra lines for Details, borrowed for this call.
+    editor::Rect transformBounds{{.2,.2},{.8,.8}}; // Normalized display coordinates; texture flip does not flip overlays.
+    std::optional<bool> showAnchor; // Unset preserves the legacy transform/anchor coupling.
+};
+struct MonitorLabels {
+    const char *safeArea="Safe area",*guides="Guides",*timecode="Timecode",*bounds="Transform bounds",*anchor="Anchor point";
+    const char *metadata="Metadata";
+    std::array<const char *,3> presets{"Off","Clip","Details"};
+};
+struct MonitorView {
+    explicit MonitorView(editor::ImageView source):image(source) {}
+    editor::ImageView image; // Borrowed host texture and source pixel dimensions.
+    editor::PreviewState status=editor::PreviewState::Ready;
+    editor::ImagePlacementMode placement=editor::ImagePlacementMode::Fit;
+    StateView stateView{}; // Borrowed text/icons for non-ready states.
+};
+// Edits host-owned display options only, with no media or renderer ownership.
+void MonitorControls(const char *id,MonitorOptions &options,const IconAtlas *icons=nullptr,const MonitorLabels &labels={});
+void Monitor(const char *id, ImTextureRef texture, ImVec2 size, const editor::TimeState &time,
+             const MonitorOptions &options, const Theme &theme);
+// Displays a host-updated texture/status only. Returns a non-ready state action request.
+bool Monitor(const char *id,const MonitorView &view,ImVec2 size,const editor::TimeState &time,
+             const MonitorOptions &options,const Theme &theme,ComponentOptions components={});
+struct AudioBucket {
+    float minimum = 0, maximum = 0, rms = 0, peak = 0;
+};
+void BuildAudioBuckets(std::span<const float> interleaved, int channels, int channel,
+                       std::span<AudioBucket> output);
+struct MeterState {
+    float rms = 0, peak = 0, heldPeak = 0, holdRemaining = 0;
+};
+void UpdateMeter(MeterState &state, std::span<const float> samples, float deltaSeconds,
+                 float holdSeconds = 1.5f);
+void Waveform(const char *id, std::span<const AudioBucket> buckets, ImVec2 size, const Theme &theme);
+// Bounded pixel envelope; out-of-source pixels are silent. No allocation or cache ownership.
+AudioBucket WaveformPixel(const WaveformView &view, editor::Range sourceRange);
+void DrawWaveform(const WaveformView &view, editor::Range range, ImVec2 min, ImVec2 max,
+                  const WaveformOptions &options, const Theme &theme);
+void LevelMeter(const char *id, const MeterState &left, const MeterState &right, ImVec2 size,
+                const Theme &theme);
+struct AudioStripView {
+    StableId id = 0;
+    const char *label = "";
+    double gain = 1, pan = 0;
+    bool mute = false, solo = false, record = false;
+    StableId gainId = 0, panId = 0; // Explicit property IDs. Zero disables the corresponding control.
+    bool locked = false;
+    const char *gainLabel = "Gain", *panLabel = "Pan", *muteLabel = "Mute", *soloLabel = "Solo",
+               *recordLabel = "Record";
+};
+void AudioStrip(const AudioStripView &strip, std::uint64_t revision, editor::PropertyState &state,
+                editor::EventBuffer &events);
+struct Rgba {
+    float r = 0, g = 0, b = 0, a = 1;
+};
+struct ScopeBuffers {
+    std::span<std::uint32_t> red, green, blue, luma; // 256 histogram bins each.
+    std::span<std::uint32_t> waveform;               // width * 256 luma bins.
+    std::span<std::uint32_t> vectorscope;            // 256 * 256 chroma bins.
+    // Optional RGB parade: provide all three width * 256 buffers, or leave all empty.
+    std::span<std::uint32_t> redWaveform, greenWaveform, blueWaveform;
+};
+bool BuildScopes(std::span<const Rgba> pixels, int width, int height, ScopeBuffers output);
+void Histogram(const char *id, std::span<const std::uint32_t> bins, ImVec2 size, const Theme &theme);
+void ScopeImage(const char *id, std::span<const std::uint32_t> bins, int width, int height, ImVec2 size,
+                const Theme &theme);
+void ScopeImage(const char *id, std::span<const std::uint32_t> bins, int width, int height, ImVec2 size,
+                const Theme &theme, ImVec4 tint);
+struct ColorValues {
+    float lift[3]{}, gamma[3]{1, 1, 1}, gain[3]{1, 1, 1};
+    float temperature = 0, tint = 0, exposure = 0;
+};
+// Curve key time maps normalized input 0..1 to 0..TicksPerSecond; key value is output.
+// Each channel must be sorted by tick. Empty channels are identity. Inputs/outputs are clamped to 0..1; alpha is preserved.
+struct ColorCurveSet {std::span<const editor::Keyframe> red,green,blue;};
+Rgba ApplyColorCurves(Rgba input,const ColorCurveSet &curves);
+bool ColorControls(const char *id, ColorValues &hostDraft);
+struct ColorPropertyIds {
+    StableId lift = 0, gamma = 0, gain = 0, temperature = 0, tint = 0, exposure = 0;
+};
+struct ColorLabels {
+    const char *lift = "Lift", *gamma = "Gamma", *gain = "Gain";
+    const char *temperature = "Temperature", *tint = "Tint", *exposure = "Exposure", *level = "Level";
+};
+struct ColorState {
+    editor::Transaction drag;
+    std::array<ImVec2, 3> wheelCenters{}; // Last layout, for host overlays and public IO automation.
+    float wheelRadius = 0;
+};
+// RGB edits use Value::x/y/z; scalar edits use x. IDs are explicit, unique and nonzero.
+void ColorControls(const char *id, const ColorValues &values, const ColorPropertyIds &ids,
+                   std::uint64_t revision, ColorState &state, editor::EventBuffer &events,
+                   const ColorLabels &labels = {});
+} // namespace imkit::video
