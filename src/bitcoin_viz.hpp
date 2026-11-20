@@ -119,6 +119,7 @@ class SequenceFeed {
     std::size_t capacity_;
     std::thread thread_;
     std::atomic<bool> stop_{false};
+    std::atomic<bool> connected_{false};
     std::mutex mutex_;
     std::condition_variable ready_cv_;
     std::deque<Sequence> queue_;
@@ -127,12 +128,14 @@ class SequenceFeed {
     void receive();
 public:
     std::atomic<std::uint64_t> dropped{0};
+    std::atomic<std::uint64_t> disconnects{0};
     explicit SequenceFeed(std::string address, std::size_t capacity = 8192);
     ~SequenceFeed();
     SequenceFeed(const SequenceFeed&) = delete;
     SequenceFeed& operator=(const SequenceFeed&) = delete;
     void start();
     void close();
+    bool connected() const { return connected_.load(); }
     std::optional<Sequence> pop();
     std::string error();
 };
@@ -143,12 +146,15 @@ struct RPCError : std::runtime_error {
 };
 class RPC {
     CURL* curl_ = nullptr;
+    CURLM* multi_ = nullptr;
     std::string url_;
     std::filesystem::path cookie_;
+    std::function<bool()> stopped_;
     std::uint64_t serial_ = 0;
+    CURLcode perform();
 public:
     std::string cookie_marker;
-    RPC(const std::string& url, std::filesystem::path cookie);
+    RPC(const std::string& url, std::filesystem::path cookie, std::function<bool()> stopped = {});
     ~RPC();
     RPC(const RPC&) = delete;
     RPC& operator=(const RPC&) = delete;
@@ -188,6 +194,8 @@ public:
     const std::set<std::string>& visible() const { return visible_; }
 };
 
+enum class ObserverState { synchronizing, connected, reconnecting };
+
 struct Options {
     std::string command, format = "gource", mode = "state", network = "signet", rpc_url, zmq;
     std::filesystem::path database = ".runtime/bitcoin-viz.sqlite", datadir, cookie, capture_dir, input;
@@ -197,7 +205,7 @@ struct Options {
     std::optional<std::int64_t> render_after;
     double peer_interval = 2, reconcile_interval = 15, duration = 0;
     bool once = false, allow_rpc_polling = false;
-    std::function<void(const std::string&)> report;
+    std::function<void(ObserverState, const std::string&)> report;
 };
 
 // Event stream, unlike Gource's persistent current-scene projection.
@@ -225,9 +233,11 @@ class Observer {
     std::unique_ptr<SequenceFeed> feed_;
     std::unique_ptr<CaptureReader> capture_;
     std::optional<std::uint32_t> counter_;
-    std::string cookie_marker_;
+    std::string cookie_marker_, sequence_issue_;
     std::size_t metadata_cursor_ = 0;
-    std::uint64_t last_drop_ = 0;
+    std::uint64_t last_drop_ = 0, last_disconnect_ = 0;
+    void configure_sequence();
+    std::string transport() const;
     void rebuild(const Json& chain, const std::string& cause);
     void metadata();
 public:

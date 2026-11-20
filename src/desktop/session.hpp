@@ -17,6 +17,7 @@ struct Node {
 struct Connection {
     std::string status;
     std::filesystem::path database;
+    std::uint64_t generation = 0;
 };
 class Session {
     std::filesystem::path directory;
@@ -24,9 +25,10 @@ class Session {
     std::condition_variable changed;
     Node node;
     Connection connection;
-    std::atomic<unsigned> generation{0};
+    std::atomic<std::uint64_t> generation{0};
     std::atomic<bool> closing{false};
     std::thread worker;
+    void observe(const Node& request, std::uint64_t current);
     void run();
 public:
     explicit Session(std::filesystem::path directory);
