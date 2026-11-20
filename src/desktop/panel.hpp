@@ -8,13 +8,15 @@ struct Panel {
     int engine = 0;
     int projection[2]{};
     Parameters values[2];
+    Parameters applied_values[2];
     std::string selected[2]{"bloom-intensity","glow-intensity"};
     Node node;
     bool visible = true, preview = false;
-    bool apply = true, reconnect = false;
-    int cap = 5000;
+    bool focus = false;
+    bool change_scene = true, apply_appearance = false, reconnect = false;
+    int cap = 5000, applied_cap = 5000;
     std::string error;
-    const char* mode() const;
-    void draw(const Connection& connection, const char* gpu);
+    void toggle();
+    void draw(const Connection& connection);
 };
 }

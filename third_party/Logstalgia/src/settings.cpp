@@ -508,7 +508,7 @@ void LogstalgiaSettings::importLogstalgiaSettings(ConfFile& conffile, ConfSectio
             SummarizerGroup group;
             std::string error;
 
-            if(!SummarizerGroup::parse(entry->getString(), group, error)) {
+            if(!SummarizerGroup::parse(entry->getString(), group, error, *this)) {
                 if(error.empty()) error = "invalid group definition";
                 conffile.entryException(entry, error);
             }
@@ -883,7 +883,11 @@ SummarizerGroup::SummarizerGroup() {
 }
 
 bool SummarizerGroup::parse(const std::string& group_string, SummarizerGroup& group, std::string& error) {
+    return parse(group_string, group, error, settings);
+}
 
+bool SummarizerGroup::parse(const std::string& group_string, SummarizerGroup& group, std::string& error,
+                            const LogstalgiaSettings& defaults) {
     std::vector<std::string> group_definition;
     Regex groupregex("^([^,]+),(?:(HOST|CODE|URI)=)?([^,]+)(?:,SEP=([^,]+))?(?:,MAX=([^,]+))?(?:,ABBR=([^,]+))?,(\\d+)(?:,([^,]+))?$");
     groupregex.match(group_string, &group_definition);
@@ -897,19 +901,34 @@ bool SummarizerGroup::parse(const std::string& group_string, SummarizerGroup& gr
     // TODO: make this white?
     vec3 colour(0.0f, 0.0f, 0.0f);
 
-    if(group_definition.size()>=6) {
+    if(group_definition.size()>=7) {
         std::string group_name  = group_definition[0];
         std::string group_type  = group_definition[1];
         std::string group_regex = group_definition[2];
         std::string separators  = group_definition[3];
 
         if(group_type.empty()) group_type = "URI";
-        if(separators.empty()) separators = settings.path_separators;
+        if(separators.empty()) separators = defaults.path_separators;
 
-        int max_depth    = group_definition[4].empty() ? settings.path_max_depth  : atoi(group_definition[4].c_str());
-        int abbrev_depth = group_definition[5].empty() ? settings.path_abbr_depth : atoi(group_definition[5].c_str());
-
-        int percent      = atoi(group_definition[6].c_str());
+        auto read_number = [](const std::string& raw, int& value) {
+            if(raw.empty()) return true;
+            try {
+                size_t consumed = 0;
+                value = std::stoi(raw, &consumed);
+                return consumed == raw.size();
+            } catch(const std::exception&) {
+                return false;
+            }
+        };
+        int max_depth = defaults.path_max_depth;
+        int abbrev_depth = defaults.path_abbr_depth;
+        int percent = 0;
+        if(!read_number(group_definition[4], max_depth) ||
+           !read_number(group_definition[5], abbrev_depth) ||
+           !read_number(group_definition[6], percent)) {
+            error = "invalid numeric field in group";
+            return false;
+        }
 
         debugLog("group name %s type %s regex %s max %d abbrev %d percent %d",
                  group_name.c_str(), group_type.c_str(), group_regex.c_str(), max_depth, abbrev_depth, percent);
@@ -918,12 +937,14 @@ bool SummarizerGroup::parse(const std::string& group_string, SummarizerGroup& gr
 
         //check for optional colour param
         if(group_definition.size() >= 8) {
+            const std::string& rgb = group_definition[7];
             int r, g, b;
-            if(sscanf(group_definition[7].c_str(), "%02x%02x%02x", &r, &g, &b) == 3) {
-                colour = vec3( r, g, b );
-                debugLog("r = %d, g = %d, b = %d\n", r, g, b);
-                colour /= 255.0f;
+            if(rgb.size() != 6 || rgb.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
+               sscanf(rgb.c_str(), "%02x%02x%02x", &r, &g, &b) != 3) {
+                error = "invalid colour in group (expected RRGGBB)";
+                return false;
             }
+            colour = vec3(r,g,b) / 255.0f;
         }
 
         Regex regex(group_regex, true);
