@@ -32,9 +32,14 @@ void Observer::identify() {
     cookie_marker_ = rpc_.cookie_marker;
     counter_.reset();
     if (options_.zmq.empty()) {
-        for (const auto& notifier : rpc_.call("getzmqnotifications")) {
-            if (notifier.at("type") == "pubsequence") { options_.zmq = notifier.at("address"); break; }
+        try {
+            for (const auto& notifier : rpc_.call("getzmqnotifications")) {
+                if (notifier.at("type") == "pubsequence") { options_.zmq = notifier.at("address"); break; }
+            }
+        } catch (const RPCError& error) {
+            if (!options_.allow_rpc_polling || error.code != -32601) throw;
         }
+        if (options_.zmq.empty() && options_.allow_rpc_polling) return;
         if (options_.zmq.empty()) throw std::runtime_error("Core has no sequence publisher; configure zmqpubsequence=unix:/.../sequence.sock");
     }
     options_.zmq = endpoint(options_.zmq);
@@ -136,27 +141,32 @@ void Observer::handle(const Sequence& notification) {
 }
 void Observer::run(const std::function<bool()>& stopped) {
     identify();
-    feed_ = std::make_unique<SequenceFeed>(options_.zmq);
-    feed_->start();
+    if (!options_.zmq.empty()) {
+        feed_ = std::make_unique<SequenceFeed>(options_.zmq);
+        feed_->start();
+    }
+    const std::string transport = feed_ ? "RPC + ZMQ sequence" : "RPC polling";
+    if (options_.report) options_.report("Synchronizing / " + transport);
     const auto started = Clock::now();
     auto next_peer = started, next_reconcile = started, next_metadata = started;
     std::cerr << "bitcoin-viz: " << options_.network << ", Core " << s_.get("core_version") << ", ZMQ " << options_.zmq << '\n';
     try {
         while (!stopped() && (options_.duration == 0 || std::chrono::duration<double>(Clock::now()-started).count() < options_.duration)) {
             const auto now = Clock::now();
-            if (!feed_->error().empty()) throw std::runtime_error("ZMQ receiver failed: " + feed_->error());
+            if (feed_ && !feed_->error().empty()) throw std::runtime_error("ZMQ receiver failed: " + feed_->error());
             try {
                 if (now >= next_reconcile) {
                     reconcile(s_.get("last_reconcile_ns").is_null() ? "startup" : "periodic");
+                    if (options_.report) options_.report("Connected / " + transport);
                     next_reconcile = Clock::now() + std::chrono::milliseconds(static_cast<long>(options_.reconcile_interval*1000));
                     Transaction tx(s_); s_.prune(options_.journal_keep); tx.commit();
                 }
-                const auto dropped = feed_->dropped.load();
+                const auto dropped = feed_ ? feed_->dropped.load() : 0;
                 if (dropped != last_drop_) {
                     { Transaction tx(s_); s_.event("observer.source-loss","node:observer","ingress-overflow-or-malformed",{{"dropped",dropped-last_drop_}}); tx.commit(); }
                     last_drop_ = dropped; reconcile("ingress-loss");
                 }
-                for (int i = 0; i < 128; ++i) { auto event = feed_->pop(); if (!event) break; handle(*event); }
+                for (int i = 0; feed_ && i < 128; ++i) { auto event = feed_->pop(); if (!event) break; handle(*event); }
                 if (now >= next_peer) {
                     auto peers = rpc_.call("getpeerinfo");
                     { Transaction tx(s_); model.peers(peers,s_.get("node_run"),!capture_); s_.put("protocol_fidelity",capture_ ? "message-capture" : "aggregate-bytes"); tx.commit(); }
@@ -167,6 +177,7 @@ void Observer::run(const std::function<bool()>& stopped) {
                     metadata(); next_metadata = Clock::now() + std::chrono::milliseconds(static_cast<long>(options_.peer_interval*1000));
                 }
             } catch (const std::exception& e) {
+                if (options_.report) options_.report(std::string("Reconnecting / ") + e.what());
                 rpc_.close();
                 { Transaction tx(s_); s_.put("synchronized",false); s_.event("observer.source-loss","node:observer","rpc-or-chain-gap",{{"error",e.what()}}); s_.prune(options_.journal_keep); tx.commit(); }
                 std::cerr << "bitcoin-viz: recovery needed: " << e.what() << '\n';
