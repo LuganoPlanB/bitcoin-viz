@@ -27,6 +27,8 @@
 #define PADDLE_PID    2
 #define PADDLE_VHOST  3
 
+class LogstalgiaSettings;
+
 class SummarizerGroup {
 public:
     SummarizerGroup();
@@ -43,6 +45,8 @@ public:
     std::string definition;
 
     static bool parse(const std::string& group_string, SummarizerGroup& group, std::string& error);
+    static bool parse(const std::string& group_string, SummarizerGroup& group, std::string& error,
+                      const LogstalgiaSettings& defaults);
 };
 
 class LogstalgiaSettings : public SDLAppSettings {

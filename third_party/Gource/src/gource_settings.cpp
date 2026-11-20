@@ -842,7 +842,7 @@ void GourceSettings::importGourceSettings(ConfFile& conffile, ConfSection* gourc
 
             if(file_ext != ".jpg" && file_ext != ".jpeg" && file_ext != ".png") continue;
 
-            std::string image_path = gGourceSettings.user_image_dir + dirfile;
+            std::string image_path = user_image_dir + dirfile;
             std::string name       = dirfile.substr(0,dirfile.size() - file_ext.size());
 
 #ifdef __APPLE__

@@ -5,7 +5,9 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <imkit/theme.h>
 #include <bitset>
+#include <fstream>
 #include <iostream>
+#include <limits>
 
 namespace {
 using namespace studio;
@@ -28,8 +30,11 @@ class Overlay {
     ImGuiContext* context = nullptr;
     bool platform_ready = false;
     bool renderer_ready = false;
+    imkit::Theme theme = imkit::MakeTheme(imkit::ThemePreset::Midnight);
+    float scale = 0;
+    int width = 0, height = 0, framebuffer_width = 0, framebuffer_height = 0;
 public:
-    void init() {
+    void init(const fs::path& assets) {
         IMGUI_CHECKVERSION();
         context = ImGui::CreateContext();
         auto& io = ImGui::GetIO();
@@ -38,6 +43,42 @@ public:
         platform_ready = ImGui_ImplSDL2_InitForOpenGL(display.sdl_window,display.gl_context);
         if (platform_ready) renderer_ready = ImGui_ImplOpenGL2_Init();
         if (!renderer_ready) throw std::runtime_error("Cannot initialize the overlay");
+        theme.typography.body = 15;
+        imkit::SetDensity(theme,imkit::Density::Compact);
+        imkit::SetAccent(theme,{1.f,.64f,.24f,1});
+        // Reuse the proportional font shipped with Gource. Read the native
+        // filesystem path before handing the buffer to ImGui's atlas.
+        std::ifstream font(assets/"Gource"/"fonts"/"FreeSans.ttf",std::ios::binary | std::ios::ate);
+        const auto size = static_cast<std::streamoff>(font.tellg());
+        if (size > 0 && size <= std::numeric_limits<int>::max()) {
+            std::unique_ptr<void,decltype(&ImGui::MemFree)> bytes(IM_ALLOC(static_cast<std::size_t>(size)),ImGui::MemFree);
+            if (bytes && font.seekg(0).read(static_cast<char*>(bytes.get()),size))
+                io.FontDefault = io.Fonts->AddFontFromMemoryTTF(bytes.release(),static_cast<int>(size));
+        }
+    }
+    void new_frame(int drawable_width, int drawable_height) {
+        ImGui_ImplOpenGL2_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        // The content scale sets the overlay's metrics. The backend independently
+        // maps logical coordinates to pixels for high-density drawables.
+        const float content_scale = std::clamp(ImGui_ImplSDL2_GetContentScaleForWindow(display.sdl_window),
+                                               1.0f,imkit::ThemeScaleMaximum);
+        const auto size = ImGui::GetIO().DisplaySize;
+        const bool scale_changed = scale != content_scale;
+        if (scale_changed) {
+            scale = content_scale;
+            imkit::ApplyTheme(theme,scale);
+        }
+        if (scale_changed || width != size.x || height != size.y ||
+            framebuffer_width != drawable_width || framebuffer_height != drawable_height) {
+            width = static_cast<int>(size.x);
+            height = static_cast<int>(size.y);
+            framebuffer_width = drawable_width;
+            framebuffer_height = drawable_height;
+            std::cerr << "Overlay: " << width << 'x' << height << " logical, " << framebuffer_width << 'x'
+                << framebuffer_height << " drawable, " << std::lround(scale*100) << "% content scale\n";
+        }
+        ImGui::NewFrame();
     }
     ~Overlay() {
         if (renderer_ready) ImGui_ImplOpenGL2_Shutdown();
@@ -63,12 +104,48 @@ void release_mouse() {
     SDL_ShowCursor(SDL_ENABLE);
 }
 
+struct SceneSource {
+    fs::path database;
+    std::uint64_t generation = 0;
+    bool history = false;
+
+    bool operator==(const SceneSource&) const = default;
+};
+
+struct SceneRequest {
+    int engine;
+    int projection;
+    int cap;
+    SceneSource source;
+    Parameters options;
+
+    bool same_stream(const SceneRequest& other) const {
+        return engine == other.engine && projection == other.projection && cap == other.cap &&
+            source == other.source;
+    }
+    const char* mode() const {
+        return engine ? logstalgia_modes[projection] : gource_modes[projection];
+    }
+};
+
+Parameters changed_parameters(const Parameters& before, const Parameters& after) {
+    Parameters changes;
+    for (const auto& [key,value] : after) {
+        const auto previous = before.find(key);
+        if (previous == before.end() || previous->second != value) changes.emplace(key,value);
+    }
+    for (const auto& [key,value] : before)
+        if (!after.count(key)) changes.emplace(key,"");
+    return changes;
+}
+
 class View {
     fs::path assets;
     Lines lines;
     Scene scene;
     std::unique_ptr<Renderer> tree;
     std::unique_ptr<LogstalgiaRenderer> flow;
+    std::optional<SceneRequest> applied;
     Uint32 next_read = 0;
     Uint32 scene_buttons = 0;
     std::bitset<SDL_NUM_SCANCODES> scene_keys;
@@ -105,9 +182,6 @@ class View {
         display.resize(width,height);
         if (scene.app) scene.app->resize(width,height);
     }
-public:
-    explicit View(fs::path root) : assets(std::move(root)) {}
-    ~View() { reset(); }
     void reset() {
         scene.app.reset();
         scene.parser.reset();
@@ -123,9 +197,9 @@ public:
         next_read = SDL_GetTicks();
         release_mouse();
     }
-    void open(const Panel& panel, const fs::path& database, bool history) {
+    void open(const SceneRequest& request) {
         reset();
-        const auto dir = platform::utf8_path(assets/(panel.engine ? "Logstalgia" : "Gource")) + "/";
+        const auto dir = platform::utf8_path(assets/(request.engine ? "Logstalgia" : "Gource")) + "/";
         texturemanager.setDir(dir);
         fontmanager.setDir(dir+"fonts/");
         shadermanager.setDir(dir+"shaders/");
@@ -133,22 +207,72 @@ public:
         auto emit = [this](const std::string& record) {
             lines.emplace_back(record,0,record.find_last_not_of("\r\n")+1);
         };
-        if (!database.empty()) {
-            if (panel.engine) {
-                flow = std::make_unique<LogstalgiaRenderer>(database,panel.mode(),emit,
-                    history ? std::optional<std::int64_t>(0) : std::nullopt);
+        if (!request.source.database.empty()) {
+            if (request.engine) {
+                flow = std::make_unique<LogstalgiaRenderer>(request.source.database,request.mode(),emit,
+                    request.source.history ? std::optional<std::int64_t>(0) : std::nullopt);
                 flow->step();
             } else {
-                tree = std::make_unique<Renderer>(database,panel.mode(),emit,panel.cap);
+                tree = std::make_unique<Renderer>(request.source.database,request.mode(),emit,request.cap);
                 tree->snapshot();
             }
         }
-        scene = panel.engine ? logstalgia_scene(lines,panel.values[1]) : gource_scene(lines,panel.values[0]);
+        scene = request.engine ? logstalgia_scene(lines,request.options) : gource_scene(lines,request.options);
         scene.app->init();
-        std::cerr << "Scene: " << (panel.engine ? "Logstalgia / " : "Gource / ") << panel.mode() << '\n';
+        std::cerr << "Scene: " << (request.engine ? "Logstalgia / " : "Gource / ") << request.mode() << '\n';
+    }
+public:
+    explicit View(fs::path root) : assets(std::move(root)) {}
+    ~View() { reset(); }
+    void clear() {
+        reset();
+        applied.reset();
+    }
+    const std::optional<SceneRequest>& current() const { return applied; }
+    void focus_overlay() { focus_lost(); }
+    void sync_drawable(int width, int height) {
+        if (display.width != width || display.height != height) resize();
+    }
+    void apply(SceneRequest request) {
+        // Retire a previous source before any validation or initialization can fail.
+        if (applied && applied->source != request.source) clear();
+        const auto changes = applied ? changed_parameters(applied->options,request.options) : Parameters{};
+        const bool same_stream = applied && applied->same_stream(request);
+        if (same_stream && changes.empty()) return;
+        const auto appearance = request.engine ? validate_logstalgia_parameters(request.options)
+                                               : validate_gource_parameters(request.options);
+        if (same_stream && std::all_of(changes.begin(),changes.end(),[&](const auto& option) {
+            return live_parameter(request.engine,option.first);
+        })) {
+            if (request.engine) apply_logstalgia_appearance(appearance,changes);
+            else apply_gource_appearance(*scene.app,appearance,changes);
+            std::cerr << "Scene appearance updated: " << request.mode() << '\n';
+        } else {
+            try {
+                open(request);
+            } catch (const std::exception& error) {
+                // The engines share graphics managers and mutable native settings.
+                // Only a request from the same source remains eligible for recovery.
+                if (applied) {
+                    try { open(*applied); }
+                    catch (const std::exception& recovery) {
+                        clear();
+                        throw std::runtime_error(std::string(error.what()) + "; scene recovery failed: " + recovery.what());
+                    }
+                } else {
+                    clear();
+                }
+                throw;
+            }
+        }
+        applied = std::move(request);
     }
     void frame(float t, float dt) {
-        if (!scene.app) { display.clear(); return; }
+        if (!scene.app) {
+            display.setClearColour(vec4(.1f,.1f,.1f,1.f));
+            display.clear();
+            return;
+        }
         const auto now = SDL_GetTicks();
         if (SDL_TICKS_PASSED(now,next_read) && lines.size()<5000) {
             if (tree) tree->step();
@@ -158,7 +282,7 @@ public:
         scene.app->fps = ImGui::GetIO().Framerate;
         scene.app->update(t,dt);
     }
-    void event(SDL_Event e) {
+    void event(SDL_Event e, bool overlay_visible) {
         if (e.type == SDL_WINDOWEVENT) {
             switch (e.window.event) {
             case SDL_WINDOWEVENT_FOCUS_LOST: focus_lost(); break;
@@ -173,8 +297,10 @@ public:
         }
         if (!scene.app) return;
         const auto& io=ImGui::GetIO();
+        const bool mouse_captured = overlay_visible && io.WantCaptureMouse;
+        const bool keys_captured = overlay_visible && (io.WantCaptureKeyboard || io.WantTextInput);
         const auto scale = display.viewport_dpi_ratio;
-        if (e.type == SDL_MOUSEMOTION && (scene_buttons || !io.WantCaptureMouse)) {
+        if (e.type == SDL_MOUSEMOTION && (scene_buttons || !mouse_captured)) {
             e.motion.x *= scale.x;
             e.motion.y *= scale.y;
             e.motion.xrel *= scale.x;
@@ -184,7 +310,7 @@ public:
         if ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) &&
             e.button.button > 0 && e.button.button <= 32) {
             const Uint32 mask = Uint32{1} << (e.button.button - 1);
-            if (e.type == SDL_MOUSEBUTTONUP ? (scene_buttons & mask) != 0 : !io.WantCaptureMouse) {
+            if (e.type == SDL_MOUSEBUTTONUP ? (scene_buttons & mask) != 0 : !mouse_captured) {
                 if (e.type == SDL_MOUSEBUTTONUP) scene_buttons &= ~mask;
                 else scene_buttons |= mask;
                 e.button.x *= scale.x;
@@ -192,12 +318,12 @@ public:
                 scene.app->mouseClick(&e.button);
             }
         }
-        if (e.type == SDL_MOUSEWHEEL && !io.WantCaptureMouse) scene.app->mouseWheel(&e.wheel);
+        if (e.type == SDL_MOUSEWHEEL && !mouse_captured) scene.app->mouseWheel(&e.wheel);
         // Window, config and export shortcuts are owned by the host.
         if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && scene_key(e.key.keysym.sym)) {
             const auto code = e.key.keysym.scancode;
             if (code < 0 || code >= SDL_NUM_SCANCODES) return;
-            if (e.type == SDL_KEYDOWN && !e.key.repeat) scene_keys[code] = !io.WantCaptureKeyboard;
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) scene_keys[code] = !keys_captured;
             if (scene_keys[code]) scene.app->keyPress(&e.key);
             if (e.type == SDL_KEYUP) scene_keys[code] = false;
         }
@@ -230,10 +356,7 @@ int run(bool preview, fs::path recording) {
     display.init("Bitcoin Viz",1200,760,false);
     SDL_SetWindowMinimumSize(display.sdl_window, 320, 240);
     Overlay overlay;
-    overlay.init();
-    auto theme = imkit::MakeTheme(imkit::ThemePreset::Midnight);
-    imkit::SetAccent(theme,{1.f,.64f,.24f,1});
-    imkit::ApplyTheme(theme);
+    overlay.init(assets);
     const char* gpu = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     std::cerr << "OpenGL: " << gpu << '\n';
     {
@@ -244,8 +367,7 @@ int run(bool preview, fs::path recording) {
         Session session(prefs);
         if (!preview && recording.empty()) session.connect(panel.node);
         bool running = true;
-        fs::path active;
-        std::uint64_t active_generation = 0;
+        SceneSource observed_source;
         Uint64 last = SDL_GetPerformanceCounter();
         while (running) {
             SDL_Event event;
@@ -257,9 +379,11 @@ int run(bool preview, fs::path recording) {
                     running = false;
                     break;
                 }
-                if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.sym == SDLK_F1)
-                    panel.visible = !panel.visible;
-                view.event(event);
+                if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.sym == SDLK_F1) {
+                    panel.toggle();
+                    if (panel.visible) view.focus_overlay();
+                }
+                view.event(event,panel.visible);
             }
             if (!running) break;
             int drawable_width, drawable_height;
@@ -270,21 +394,31 @@ int run(bool preview, fs::path recording) {
                 SDL_Delay(10);
                 continue;
             }
-            ImGui_ImplOpenGL2_NewFrame();
-            ImGui_ImplSDL2_NewFrame();
-            ImGui::NewFrame();
+            view.sync_drawable(drawable_width,drawable_height);
+            overlay.new_frame(drawable_width,drawable_height);
             auto state = session.state();
             if (!recording.empty()) state = {"Recording / "+platform::utf8_path(recording.filename()),recording};
             if (panel.preview) state = {"Generated node activity",sample.open()};
-            if (state.generation != active_generation || state.database != active || panel.apply) {
-                active = state.database;
-                active_generation = state.generation;
-                panel.apply = false;
+            const SceneSource source{state.database,state.generation,panel.preview || !recording.empty()};
+            const bool appearance = std::exchange(panel.apply_appearance,false);
+            const bool selection = std::exchange(panel.change_scene,false);
+            if (source != observed_source || selection || appearance) {
+                observed_source = source;
                 try {
-                    view.open(panel,active,panel.preview || !recording.empty());
+                    auto options = appearance ? panel.values[panel.engine] : panel.applied_values[panel.engine];
+                    std::erase_if(options,[](const auto& option) { return option.second.empty(); });
+                    const auto cap = panel.engine ? 0 : appearance ? panel.cap : panel.applied_cap;
+                    view.apply({panel.engine,panel.projection[panel.engine],cap,source,options});
+                    if (appearance) {
+                        panel.applied_values[panel.engine] = std::move(options);
+                        if (!panel.engine) panel.applied_cap = cap;
+                    }
                     panel.error.clear();
                 } catch (const std::exception& e) {
-                    view.reset();
+                    if (view.current()) {
+                        panel.engine = view.current()->engine;
+                        panel.projection[panel.engine] = view.current()->projection;
+                    }
                     panel.error=e.what();
                     std::cerr << "Scene error: " << e.what() << '\n';
                 }
@@ -293,8 +427,8 @@ int run(bool preview, fs::path recording) {
             const float dt = float(double(now-last)/SDL_GetPerformanceFrequency());
             last = now;
             try { view.frame(SDL_GetTicks()*.001f,std::min(dt,.1f)); }
-            catch (const std::exception& e) { view.reset(); panel.error=e.what(); }
-            panel.draw(state,gpu);
+            catch (const std::exception& e) { view.clear(); panel.error=e.what(); }
+            panel.draw(state);
             if (panel.reconnect || (!panel.preview && state.status.empty() && recording.empty())) {
                 panel.reconnect=false;
                 recording.clear();
