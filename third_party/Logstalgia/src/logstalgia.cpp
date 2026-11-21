@@ -27,6 +27,9 @@
 
 #include "core/png_writer.h"
 #include "core/timezone.h"
+#ifdef _WIN32
+#include <commdlg.h>
+#endif
 
 //Logstalgia
 

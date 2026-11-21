@@ -7,5 +7,20 @@
     "openssl",
     {"name": "sqlite3", "default-features": false},
     {"name": "zeromq", "default-features": false}
-  ]
+  ],
+  "features": {
+    "desktop": {
+      "description": "Dependencies for the interactive desktop viewer",
+      "dependencies": [
+        "boost-filesystem",
+        {"name": "freetype", "default-features": false},
+        "glew",
+        "glm",
+        "libpng",
+        {"name": "pcre2", "default-features": false},
+        {"name": "sdl2", "default-features": false},
+        {"name": "sdl2-image", "default-features": false, "features": ["libjpeg-turbo"]}
+      ]
+    }
+  }
 }

@@ -1,4 +1,5 @@
 #include "shader_common.h"
+#include <filesystem>
 #include "logger.h"
 
 #include <boost/format.hpp>
@@ -48,7 +49,7 @@ void ShaderPart::loadSourceFile() {
     raw_source.clear();
 
     // get length
-    std::ifstream in(filename.c_str());
+    std::ifstream in(std::filesystem::u8path(filename));
 
     if(!in.is_open()) {
         throw ShaderException(str(boost::format("could not open '%s'") % filename));

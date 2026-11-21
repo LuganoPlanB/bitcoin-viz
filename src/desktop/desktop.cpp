@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "panel.hpp"
 #include "platform.hpp"
+#include "bitcoin_viz_version.hpp"
 #include <backends/imgui_impl_opengl2.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <imkit/theme.h>
@@ -345,7 +346,7 @@ struct Preview {
     ~Preview() { std::error_code ec; if (!dir.empty()) fs::remove_all(dir,ec); }
 };
 
-int run(bool preview, fs::path recording) {
+int run(bool preview, fs::path recording, bool smoke = false) {
     const auto assets = sdl_path(SDL_GetBasePath())/"viz-data";
     const auto prefs = sdl_path(SDL_GetPrefPath("Bitcoin Viz","Observer"));
     const DisplayLifetime display_lifetime;
@@ -353,12 +354,21 @@ int run(bool preview, fs::path recording) {
     display.enableHighDPIAwareness(true);
     display.enableVsync(true);
     display.enableResize(true);
-    display.init("Bitcoin Viz",1200,760,false);
+    try {
+        display.init("Bitcoin Viz",1200,760,false);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Cannot open a desktop OpenGL window: ") + e.what());
+    }
+    const auto* gpu = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const auto* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const auto* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    if (!gpu || !version || !vendor) throw std::runtime_error("OpenGL driver did not report its identity");
+    std::cerr << "OpenGL: " << gpu << " / " << version << " / " << vendor << '\n';
+    if (!GLEW_VERSION_2_1)
+        throw std::runtime_error("OpenGL 2.1 compatibility is required. Check the system graphics driver.");
     SDL_SetWindowMinimumSize(display.sdl_window, 320, 240);
     Overlay overlay;
     overlay.init(assets);
-    const char* gpu = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-    std::cerr << "OpenGL: " << gpu << '\n';
     {
         Panel panel;
         panel.preview = preview;
@@ -369,7 +379,12 @@ int run(bool preview, fs::path recording) {
         bool running = true;
         SceneSource observed_source;
         Uint64 last = SDL_GetPerformanceCounter();
+        int smoke_frames = 0;
+        const auto smoke_deadline = SDL_GetTicks() + 15000;
+        const auto window = SDL_GetWindowID(display.sdl_window);
         while (running) {
+            if (smoke && SDL_TICKS_PASSED(SDL_GetTicks(),smoke_deadline))
+                throw std::runtime_error("Timed out waiting for both desktop renderers and the overlay");
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 ImGui_ImplSDL2_ProcessEvent(&event);
@@ -447,10 +462,24 @@ int run(bool preview, fs::path recording) {
             }
             ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
             display.update();
+            if (smoke) {
+                if (!panel.error.empty()) throw std::runtime_error(panel.error);
+                if (view.current() && ImGui::GetDrawData()->TotalVtxCount > 0) {
+                    if (SDL_GetWindowID(display.sdl_window) != window || view.current()->engine != panel.engine)
+                        throw std::runtime_error("Desktop smoke test changed windows or missed an engine switch");
+                    if (++smoke_frames == 4) {
+                        panel.engine = 1;
+                        panel.change_scene = true;
+                    } else if (smoke_frames == 8) {
+                        std::cerr << "Desktop smoke passed: Gource, Logstalgia and overlay in one OpenGL window\n";
+                        return 0;
+                    }
+                }
+            }
             SDL_Delay(1);
         }
     }
-    return 0;
+    return smoke ? 1 : 0;
 }
 }
 int main(int argc, char** argv) {
@@ -459,8 +488,19 @@ int main(int argc, char** argv) {
         SDL_SetMainReady();
         if (argc==1) return run(false,{});
         if (argc==2 && std::string(argv[1])=="--demo") return run(true,{});
+        if (argc==2 && std::string(argv[1])=="--smoke-test") return run(true,{},true);
+        if (argc==2 && std::string(argv[1])=="--version") {
+            std::cout << BITCOIN_VIZ_VERSION << '\n';
+            return 0;
+        }
         if (argc==3 && std::string(argv[1])=="--db") return run(false,std::filesystem::u8path(argv[2]));
-        std::cerr << "Usage: bitcoin-viz-desktop [--demo | --db PATH]\n";
+        std::cerr << "Usage: bitcoin-viz-desktop [--demo | --db PATH | --version | --smoke-test]\n";
         return argc==2 && std::string(argv[1])=="--help" ? 0 : 1;
-    } catch (const std::exception& e) { std::cerr << "Bitcoin Viz: " << e.what() << '\n'; return 1; }
+    } catch (const std::exception& e) {
+        std::cerr << "Bitcoin Viz: " << e.what() << '\n';
+#if defined(_WIN32) || defined(__APPLE__)
+        if (argc==1) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Bitcoin Viz",e.what(),nullptr);
+#endif
+        return 1;
+    }
 }

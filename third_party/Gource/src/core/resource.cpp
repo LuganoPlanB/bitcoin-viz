@@ -26,7 +26,7 @@
 */
 
 #include "resource.h"
-#include <boost/filesystem.hpp>
+#include <filesystem>
 
 ResourceManager::ResourceManager() {
 }
@@ -52,11 +52,11 @@ ResourceManager::~ResourceManager() {
 }
 
 bool ResourceManager::fileExists(const std::string& filename) {
-    return boost::filesystem::is_regular_file(filename);
+    return std::filesystem::is_regular_file(std::filesystem::u8path(filename));
 }
 
 bool ResourceManager::dirExists(const std::string& dirname) {
-    return boost::filesystem::is_directory(dirname);
+    return std::filesystem::is_directory(std::filesystem::u8path(dirname));
 }
 
 void ResourceManager::release(Resource* resource) {

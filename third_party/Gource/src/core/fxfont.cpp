@@ -52,6 +52,11 @@
 */
 
 #include "fxfont.h"
+#ifdef _WIN32
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#endif
 
 FXFontManager fontmanager;
 
@@ -234,7 +239,20 @@ FXGlyphSet::~FXGlyphSet() {
 
 void FXGlyphSet::init() {
 
+#ifdef _WIN32
+    // FreeType's narrow filename API uses the CRT code page on Windows.
+    // Keep the UTF-8 path and hold the loaded bytes for the life of the face.
+    std::ifstream input(std::filesystem::u8path(fontfile), std::ios::binary | std::ios::ate);
+    const auto length = static_cast<std::streamoff>(input.tellg());
+    if(length <= 0 || length > std::numeric_limits<FT_Long>::max()) {
+        throw FXFontException(fontfile);
+    }
+    font_bytes.resize(static_cast<std::size_t>(length));
+    if(!input.seekg(0).read(reinterpret_cast<char*>(font_bytes.data()), length) ||
+       FT_New_Memory_Face(freetype, font_bytes.data(), static_cast<FT_Long>(length), 0, &ft_face)) {
+#else
     if(FT_New_Face(freetype, fontfile.c_str(), 0, &ft_face)) {
+#endif
         throw FXFontException(fontfile);
     }
    

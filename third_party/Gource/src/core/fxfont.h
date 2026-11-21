@@ -135,6 +135,9 @@ class FXGlyphSet {
     FT_Face ft_face;
     FT_Int32 ft_flags;
     std::string fontfile;
+#ifdef _WIN32
+    std::vector<FT_Byte> font_bytes;
+#endif
     int max_height;
     int size;
     int dpi;

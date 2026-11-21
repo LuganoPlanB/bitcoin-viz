@@ -3,8 +3,36 @@
   "cmakeMinimumRequired": {"major": 3, "minor": 20, "patch": 0},
   "configurePresets": [
     {"name": "release", "generator": "Ninja", "binaryDir": "${sourceDir}/build/release", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
-    {"name": "sanitize", "generator": "Ninja", "binaryDir": "${sourceDir}/build/sanitize", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "BITCOIN_VIZ_SANITIZE": "ON"}}
+    {"name": "sanitize", "generator": "Ninja", "binaryDir": "${sourceDir}/build/sanitize", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "BITCOIN_VIZ_SANITIZE": "ON"}},
+    {"name": "desktop", "inherits": "release", "binaryDir": "${sourceDir}/build/desktop", "cacheVariables": {"BITCOIN_VIZ_DESKTOP": "ON"}},
+    {
+      "name": "desktop-macos", "inherits": "desktop", "binaryDir": "${sourceDir}/build/desktop-macos",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/ci/triplets",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
+      }
+    },
+    {
+      "name": "desktop-windows", "generator": "Visual Studio 17 2022", "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/desktop-windows",
+      "cacheVariables": {
+        "BITCOIN_VIZ_DESKTOP": "ON", "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/ci/triplets", "VCPKG_TARGET_TRIPLET": "x64-windows-release"
+      }
+    }
   ],
-  "buildPresets": [{"name": "release", "configurePreset": "release"}, {"name": "sanitize", "configurePreset": "sanitize"}],
-  "testPresets": [{"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}}, {"name": "sanitize", "configurePreset": "sanitize", "output": {"outputOnFailure": true}}]
+  "buildPresets": [
+    {"name": "release", "configurePreset": "release"}, {"name": "sanitize", "configurePreset": "sanitize"},
+    {"name": "desktop", "configurePreset": "desktop"}, {"name": "desktop-macos", "configurePreset": "desktop-macos"},
+    {"name": "desktop-windows", "configurePreset": "desktop-windows", "configuration": "Release"}
+  ],
+  "testPresets": [
+    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
+    {"name": "sanitize", "configurePreset": "sanitize", "output": {"outputOnFailure": true}},
+    {"name": "desktop", "configurePreset": "desktop", "output": {"outputOnFailure": true}},
+    {"name": "desktop-macos", "configurePreset": "desktop-macos", "output": {"outputOnFailure": true}},
+    {"name": "desktop-windows", "configurePreset": "desktop-windows", "configuration": "Release", "output": {"outputOnFailure": true}}
+  ]
 }
