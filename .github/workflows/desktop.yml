@@ -49,7 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache libsqlite3-dev libzmq3-dev libcurl4-openssl-dev libssl-dev \
             libsdl2-dev libsdl2-image-dev libglew-dev libgl1-mesa-dev libglu1-mesa-dev libglm-dev \
-            libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev xvfb xauth xdotool
+            libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev xvfb xauth xdotool ffmpeg
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: runner.os != 'Linux'
         with:
@@ -99,9 +99,10 @@ jobs:
             --version "$version" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
         if: runner.os == 'Linux'
-        run: >-
-          python -B tests/desktop_overlay.py "$RUNNER_TEMP/Desktop install/bin/bitcoin-viz-desktop"
-          "$RUNNER_TEMP/viz-evidence/overlay" --scale 100
+        run: |
+          viewer="$RUNNER_TEMP/Desktop install/bin/bitcoin-viz-desktop"
+          python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/overlay" --scale 100
+          python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/startup" --scale 100 --startup
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

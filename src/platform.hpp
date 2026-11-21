@@ -10,6 +10,7 @@
 namespace bitcoin_viz::platform {
 void initialize_process();
 std::filesystem::path default_datadir();
+std::filesystem::path desktop_mainnet_cookie();
 std::string utf8_path(const std::filesystem::path& path);
 struct FileInfo { std::uint64_t device, inode, size; };
 class CaptureFile {

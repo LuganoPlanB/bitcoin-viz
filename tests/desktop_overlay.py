@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 
-from desktop_session import fixture_env, node_server
+from desktop_session import file_open_watch, fixture_env, node_server
 
 
 def wait_for(description, condition):
@@ -205,7 +205,7 @@ def wait_for_fixture(node, data):
     wait_for("fixture chain synchronization", synchronized)
 
 
-def exercise(view, node, data):
+def exercise(view, node, data, cookie):
     view.until_log("Scene: Gource / state")
 
     # Change projection through the actual combo using native keyboard navigation.
@@ -288,17 +288,19 @@ def exercise(view, node, data):
 
     view.click(96, 100)
     view.capture("node-before")
+    view.click(175, 237)
+    view.type(str(cookie))
     view.click(175, 167)
     view.type("http://127.0.0.1:70000")
-    view.click(49, 307)
-    view.until_log("Scene: Logstalgia / mempool", 2)
+    view.click(65, 303)
+    assert view.log().count("Scene: Logstalgia / mempool") == 1
     assert node.attempts == 0, "Invalid RPC port made a network request"
     multiplier = view.scale / 100
 
     def invalid_status():
         frame = view.capture("node-invalid")
-        patch = view.pixels_in(frame,round(22*multiplier),round(70*multiplier),
-                              round(255*multiplier),round(17*multiplier))
+        patch = view.pixels_in(frame,round(22*multiplier),round(315*multiplier),
+                              round(255*multiplier),round(26*multiplier))
         return any(red > 205 and 130 < green < 207 and blue < 170
                    for red, green, blue in zip(patch[::3],patch[1::3],patch[2::3]))
 
@@ -310,10 +312,23 @@ def exercise(view, node, data):
     for _ in range(5):
         view.key("BackSpace")
     view.xdo("type", "--delay", 24, str(node.server_port))
-    view.click(49, 307)
+    view.click(150, 303)
+    assert node.requests == 0, "Connect was available before verification"
+    view.click(65, 303)
+    wait_for("explicit verification", lambda: node.requests == 1)
+    assert not list(data.rglob("*.sqlite")), "Testing started live observation"
+    view.capture("node-tested")
+    view.click(175, 167)
+    view.type(f"http://localhost:{node.server_port}")
+    view.click(150, 303)
+    assert node.requests == 1, "Endpoint edits left a previous verification active"
+    view.click(65, 303)
+    wait_for("verification of edited endpoint", lambda: node.requests == 2)
+    view.capture("node-retested")
+    view.click(150, 303)
 
     wait_for_fixture(node,data)
-    view.until_log("Scene: Logstalgia / mempool", 3)
+    view.until_log("Scene: Logstalgia / mempool", 2)
     assert node.attempts > 0 and view.find_window() == view.window
     view.capture("node-connected")
     print(
@@ -324,7 +339,7 @@ def exercise(view, node, data):
     )
 
 
-def source_isolation(view, node, data):
+def source_isolation(view, node, data, cookie):
     image = data.parent / "background.ppm"
     image_bytes = b"P6\n4 4\n255\n" + b"\xff\x88\x00" * 16
     image.write_bytes(image_bytes)
@@ -362,7 +377,11 @@ def source_isolation(view, node, data):
     view.click(96,100)
     view.click(175,167)
     view.type(node.url)
-    view.click(49,307)
+    view.click(175,237)
+    view.type(str(cookie))
+    view.click(65,303)
+    wait_for("explicit verification", lambda: node.requests == 1)
+    view.click(150,303)
     view.until_log(error,2)
     wait_for_fixture(node,data)
     view.capture("live-source-overlay")
@@ -375,41 +394,67 @@ def source_isolation(view, node, data):
     print("Invalid asset retained its scene on the same source; connecting to the RPC fixture cleared the old synthetic view.")
 
 
+def startup(view, node, data, opened):
+    view.capture("startup-prefill")
+    assert node.requests == 0, "Viewer sent HTTP before Test Connection"
+    assert not opened or not opened(), "Viewer opened the cookie before Test Connection"
+    view.click(150, 280)
+    assert node.requests == 0, "Startup Connect was available before verification"
+    view.click(65, 280)
+    wait_for("startup verification", lambda: node.requests == 1)
+    assert not opened or opened(), "Explicit verification did not read the cookie"
+    assert not list(data.rglob("*.sqlite")), "Testing started live observation"
+    view.capture("startup-tested")
+    view.click(150, 280)
+    wait_for_fixture(node,data)
+    view.capture("startup-connected")
+    assert view.find_window() == view.window
+    print("Startup performed TCP-only discovery. Test Connection verified the cookie, then Connect started observation.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("viewer", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--scale", type=int, choices=(100,150), required=True)
     parser.add_argument("--xdotool", default="xdotool")
-    parser.add_argument("--source-isolation", action="store_true", help="exercise source isolation at 1200x760")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--source-isolation", action="store_true", help="exercise source isolation at 1200x760")
+    mode.add_argument("--startup", action="store_true", help="exercise TCP-only startup discovery and explicit verification")
     args = parser.parse_args()
     if args.source_isolation and args.scale != 100:
         parser.error("--source-isolation uses the 100% overlay layout")
     args.destination.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="viz-overlay-") as temp, node_server("main", 9061) as node:
+    with tempfile.TemporaryDirectory(prefix="viz-overlay-") as temp, node_server("main", 9061, 8332 if args.startup else 0) as node:
         root = Path(temp)
         env, base = fixture_env(root)
-        node.set_cookie(base / ".cookie")
+        cookie = node.set_cookie(base / ".cookie" if args.startup else root / "manual.cookie")
         data = root / "data"
         # Xvfb publishes the requested physical screen size to Xlib. Its virtual
         # XRandR output reports no physical dimensions.
         env.update(XDG_DATA_HOME=str(data), XDG_CONFIG_HOME=str(root / "config"),
                    SDL_VIDEODRIVER="x11", SDL_VIDEO_X11_XRANDR="0", LIBGL_ALWAYS_SOFTWARE="1")
         env.pop("XAUTHORITY", None)
-        with display(env,96 * args.scale // 100,args.destination / "xvfb.log") as viewer_env:
+        watch = file_open_watch(cookie) if args.startup else contextlib.nullcontext(None)
+        with display(env,96 * args.scale // 100,args.destination / "xvfb.log") as viewer_env, watch as opened:
+            command = [args.viewer.resolve()]
+            if not args.startup:
+                command.append("--demo")
             with (args.destination / "viewer.log").open("w") as log, subprocess.Popen(
-                [args.viewer.resolve(), "--demo"], env=viewer_env, cwd=root, stdout=log, stderr=log,
+                command, env=viewer_env, cwd=root, stdout=log, stderr=log,
             ) as app:
                 try:
                     view = Viewer(app,args.xdotool,viewer_env,args.destination,args.scale)
                     view.resize(*(1200,760) if args.scale == 100 else (800,600))
-                    if args.source_isolation:
-                        source_isolation(view,node,data)
+                    if args.startup:
+                        startup(view,node,data,opened)
+                    elif args.source_isolation:
+                        source_isolation(view,node,data,cookie)
                     else:
-                        exercise(view,node,data)
+                        exercise(view,node,data,cookie)
                     stdout = view.log()
-                    if not args.source_isolation:
+                    if not args.source_isolation and not args.startup:
                         assert stdout.count("Scene error:") == 1
                     assert node.cookie not in stdout and node.authorization not in stdout
                     close_window(viewer_env["DISPLAY"],view.window)

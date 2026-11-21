@@ -144,6 +144,7 @@ struct RPCError : std::runtime_error {
     int code;
     RPCError(const std::string& method, int code, const std::string& message);
 };
+bool tcp_loopback_reachable(std::uint16_t port);
 class RPC {
     CURL* curl_ = nullptr;
     CURLM* multi_ = nullptr;

@@ -3,6 +3,7 @@
 
 import base64
 import contextlib
+import ctypes as ct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -30,6 +31,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def parse_request(self):
+        self.server.requests += 1
+        return super().parse_request()
 
     def do_POST(self):
         node = self.server
@@ -82,6 +87,7 @@ class NodeServer(ThreadingHTTPServer):
         self.cookie = "__cookie__:" + secrets.token_hex(16)
         self.authorization = "Basic " + base64.b64encode(self.cookie.encode()).decode()
         self.attempts = 0
+        self.requests = 0
         self.holds = {}
         self.notifications = []
 
@@ -125,14 +131,14 @@ def node_server(*args):
 def fixture_env(root):
     env = os.environ.copy()
     if sys.platform == "win32":
-        env["APPDATA"] = str(root / "app data" / "Roaming")
-        env["LOCALAPPDATA"] = str(root / "app data" / "Local")
+        env["APPDATA"] = str(root / "app data café" / "Roaming")
+        env["LOCALAPPDATA"] = str(root / "app data café" / "Local")
         base = Path(env["LOCALAPPDATA"]) / "Bitcoin"
     elif sys.platform == "darwin":
-        env["HOME"] = str(root / "isolated home")
+        env["HOME"] = str(root / "isolated home café")
         base = Path(env["HOME"]) / "Library" / "Application Support" / "Bitcoin"
     else:
-        env["HOME"] = str(root / "isolated home")
+        env["HOME"] = str(root / "isolated home café")
         base = Path(env["HOME"]) / ".bitcoin"
     return env, base
 
@@ -221,42 +227,103 @@ def meta(database, key):
 def paths(executable, root, env, base):
     with SessionProcess(executable, root / "observations", env) as session:
         assert Path(session.request("datadir")) == base, "Native default data directory differs"
+        assert Path(session.request("desktop-cookie")) == base / ".cookie"
         if sys.platform == "win32":
             legacy = Path(env["APPDATA"]) / "Bitcoin"
             legacy.mkdir(parents=True)
             assert Path(session.request("datadir")) == legacy, "Existing roaming data directory was ignored"
+            legacy_cookie = legacy / ".cookie"
+            legacy_cookie.mkdir()
+            assert Path(session.request("desktop-cookie")) == base / ".cookie"
+            legacy_cookie.rmdir()
+            legacy_cookie.write_text("unused", encoding="utf-8")
+            assert Path(session.request("desktop-cookie")) == legacy_cookie
+
+
+@contextlib.contextmanager
+def file_open_watch(path):
+    if not sys.platform.startswith("linux"):
+        yield None
+        return
+    libc = ct.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    assert fd >= 0, f"inotify_init1 failed: {ct.get_errno()}"
+    try:
+        assert libc.inotify_add_watch(fd, os.fsencode(path), 0x20) >= 0, "Cannot watch cookie opens"
+
+        def opened():
+            try:
+                return bool(os.read(fd, 4096))
+            except BlockingIOError:
+                return False
+
+        yield opened
+    finally:
+        os.close(fd)
 
 
 def discovery(executable, root, env, base):
-    # Own both standard ports before writing any fixture cookie. A port collision
-    # fails the test before the Session can contact another process.
-    with node_server("main", 1, 8332) as main, node_server("signet", 2, 38332) as signet:
+    base.mkdir(parents=True)
+    cookie = base / ".cookie"
+    with socket.socket() as unlistening, SessionProcess(executable, root / "observations", env) as session:
+        unlistening.bind(("127.0.0.1", 8332))
+        cookie.write_text("malformed", encoding="utf-8")
+        assert session.request("suggest") is None, "Cookie without a listener was suggested"
+    cookie.unlink()
+
+    env.update(http_proxy="http://127.0.0.1:1", NO_PROXY="", no_proxy="")
+    with node_server("main", 1, 8332) as main, node_server("signet", 2) as custom:
         with SessionProcess(executable, root / "observations", env) as session:
-            session.request("connect")
-            assert not session.wait("No local node cookie found")["database"]
-            assert main.attempts == signet.attempts == 0
+            assert session.request("state")["generation"] == 0
+            assert session.request("suggest") is None
+            cookie.mkdir()
+            assert session.request("suggest") is None, "Directory was suggested as a regular cookie"
+            cookie.rmdir()
+            cookie.write_text("malformed", encoding="utf-8")
+            with file_open_watch(cookie) as opened:
+                suggestion = session.request("suggest")
+                assert suggestion["url"] == main.url and Path(suggestion["cookie"]) == cookie
+                assert main.requests == custom.requests == 0, "Discovery wrote HTTP to a listener"
+                assert not opened or not opened(), "Discovery opened the cookie file"
+                rejected = session.request("test", **suggestion)
+                assert not rejected["target"] and "Invalid RPC cookie" in rejected["status"]
+                assert not opened or opened(), "Explicit test did not open the cookie"
+            assert main.requests == 0
 
-            base.mkdir(parents=True)
-            (base / ".cookie").write_text("__cookie__:" + secrets.token_hex(16), encoding="utf-8")
-            session.request("connect")
-            assert not session.wait("cookie rejected")["database"], "Stale cookie published a database"
+            if os.name != "nt":
+                cookie.chmod(0)
+                try:
+                    if not os.access(cookie, os.R_OK):
+                        assert session.request("suggest") == suggestion, "Unreadable cookie was opened during discovery"
+                        assert "Cannot read RPC cookie" in session.request("test", **suggestion)["status"]
+                finally:
+                    cookie.chmod(0o600)
 
-            main.set_cookie(base / ".cookie")
-            signet.set_cookie(base / "signet" / ".cookie")
-            session.request("connect")
-            first = session.wait("main / Connected")
-            assert meta(first["database"], "genesis") == main.genesis
-            assert signet.attempts == 0, "Mainnet success did not stop discovery"
+            main.set_cookie(cookie)
+            tested = session.request("test", **suggestion)
+            assert tested["target"] == suggestion and main.requests == 1
+            assert session.request("state")["generation"] == 0, "Testing started live observation"
+            assert not (root / "observations").exists(), "Testing created an observation database"
 
-            main.chain = "regtest"
-            session.request("connect", network=0)
-            assert not session.wait("another chain")["database"], "Mismatched chain published a database"
-            session.request("connect")
-            later = session.wait("signet / Connected")
-            assert meta(later["database"], "genesis") == signet.genesis
-            assert first["database"] != later["database"], "Two discovered chains shared a database"
+            assert session.request("draft", suggestion=suggestion) == suggestion
+            manually_routed = session.request("draft", url=custom.url)
+            assert not manually_routed["cookie"], "Endpoint edit retained the suggested cookie"
+            assert not session.request("test", **manually_routed)["target"]
+            assert custom.requests == 0, "Custom endpoint received implicit credentials"
+
+            data = root / "custom data café"
+            explicit_cookie = custom.set_cookie(data / "signet" / ".cookie")
+            manual = session.request("draft", network=1, datadir=str(data), cookie=str(explicit_cookie), url=custom.url)
+            assert session.request("draft", suggestion=suggestion) == manual
+            manual_test = session.request("test", network=1, datadir=str(data), url=custom.url)
+            assert Path(manual_test["target"]["cookie"]) == explicit_cookie
+            assert not session.request("test", **dict(manual,network=0))["target"], "Wrong chain was verified"
+            assert session.request("draft", url=main.url)["cookie"] == str(explicit_cookie)
+            session.request("connect", **tested["target"])
+            observed = session.wait("main / Connected")
+            assert meta(observed["database"], "genesis") == main.genesis
             session.stop()
-            session.assert_no_credentials(main, signet)
+            session.assert_no_credentials(main,custom)
 
 
 def switch(executable, root, env, base):
@@ -273,7 +340,7 @@ def switch(executable, root, env, base):
             assert meta(old["database"], "genesis") == first.genesis
             assert first_hold.entered.wait(2), "Old RPC did not reach the held call"
 
-            new = session.request("connect", url=second.url, cookie=str(override))
+            new = session.request("connect", network=-1, url=second.url, cookie=str(override))
             assert new["generation"] == old["generation"] + 1
             assert not new["database"], "Previous database was visible after Connect"
             assert second_probe.entered.wait(3), "Old RPC delayed the new endpoint"

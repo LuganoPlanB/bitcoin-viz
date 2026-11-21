@@ -17,22 +17,29 @@ and SHA256 checksums. Linux release binaries use static Dyne musl builds.
 ## Desktop viewer
 
 Follow the [desktop build and install recipes](docs/RELEASING.md#desktop-builds)
-for Linux, Windows or macOS. Launch the installed `bitcoin-viz-desktop` to find a
-running local Core node, or pass `--demo` to preview synthetic activity with no
-node. Both renderers are built into the viewer. The desktop layout includes the
-fonts, shaders and textures it needs. It requires a system graphics driver with
+for Linux, Windows or macOS. Launch the installed `bitcoin-viz-desktop` to set up
+a local Bitcoin Core or Bitcoin Roots node, or pass `--demo` to preview synthetic
+activity with no node. Both renderers are built into the viewer. The desktop
+layout includes the fonts, shaders and textures it needs. It requires a system graphics driver with
 OpenGL 2.1 compatibility or later.
 
 Use **Scene** to pick Gource or Logstalgia, change the projection, and apply
 appearance settings. **F1** toggles the overlay. **Synthetic preview** switches
-to generated activity. Use **Node** to select a network, edit the RPC URL, data
-directory, cookie path or sequence endpoint, and click **Connect**. To open an
+to generated activity. Use **Node** to select a network or edit the RPC URL,
+data directory, cookie path, or sequence endpoint. Select **Test Connection** to
+verify the node, then **Connect** to start collecting. To open an
 existing Bitcoin Viz recording, run `bitcoin-viz-desktop --db PATH`.
 
-With untouched settings the viewer looks for cookies in the standard Bitcoin
-Core data directory and uses plain HTTP on `127.0.0.1`. It probes mainnet, signet,
-regtest, testnet4 and testnet3 in that order and checks the chain returned by
-Core. If it discovers a sequence publisher, it uses the publisher with RPC for
+For an unconfigured mainnet connection, the viewer suggests plain HTTP at
+`127.0.0.1:8332` when the standard cookie is a regular file and the TCP port is
+reachable. It looks at `~/.bitcoin/.cookie` on Linux and
+`~/Library/Application Support/Bitcoin/.cookie` on macOS. On Windows it uses
+`%LOCALAPPDATA%\Bitcoin\.cookie`, with preference for an existing regular
+`%APPDATA%\Bitcoin\.cookie`. **Test Connection** reads the cookie and sends RPC.
+Changing the endpoint clears the suggested cookie. For a custom endpoint, choose
+a cookie or data directory. Desktop RPC connects directly to loopback.
+
+If the viewer discovers a sequence publisher, it uses the publisher with RPC for
 reconciliation. With RPC alone it polls snapshots, so membership changes that
 begin and end between polls can be missed. Protocol traffic shows per-peer byte
 deltas. The UTXO scene covers observed outputs within the configured window.

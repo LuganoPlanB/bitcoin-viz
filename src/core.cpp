@@ -82,6 +82,18 @@ Json parse_exact(const std::string& input) {
     if (!Json::sax_parse(input,&sax)) throw std::runtime_error("Invalid or overly nested JSON response");
     return sax.root;
 }
+bool tcp_loopback_reachable(std::uint16_t port) {
+    initialize_curl();
+    std::unique_ptr<CURL,decltype(&curl_easy_cleanup)> probe(curl_easy_init(),curl_easy_cleanup);
+    if (!probe) return false;
+    const auto url = "http://127.0.0.1:"+std::to_string(port);
+    return curl_easy_setopt(probe.get(),CURLOPT_URL,url.c_str()) == CURLE_OK &&
+        curl_easy_setopt(probe.get(),CURLOPT_CONNECT_ONLY,1L) == CURLE_OK &&
+        curl_easy_setopt(probe.get(),CURLOPT_PROXY,"") == CURLE_OK &&
+        curl_easy_setopt(probe.get(),CURLOPT_NOSIGNAL,1L) == CURLE_OK &&
+        curl_easy_setopt(probe.get(),CURLOPT_TIMEOUT_MS,250L) == CURLE_OK &&
+        curl_easy_perform(probe.get()) == CURLE_OK;
+}
 RPCError::RPCError(const std::string& method, int error_code, const std::string& message)
     : std::runtime_error(method + ": " + std::to_string(error_code) + ": " + message), code(error_code) {}
 RPC::RPC(const std::string& url, std::filesystem::path cookie, std::function<bool()> stopped)

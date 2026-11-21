@@ -28,8 +28,10 @@ The local changes in Gource's `src/core/{display,fxfont,shader,texture}.cpp`
 release graphics resources while the context is current and clean up partially
 loaded resources on failure.
 The desktop build also adapts the Windows CRT declarations, native font and
-shader paths, and the macOS OpenGL profile. The installed binary notices for
-Core, FTGL, TinyXML and the embedded ImGui fonts are in `DESKTOP-NOTICES.md`.
+shader paths, and the macOS OpenGL profile. Both Core headers explicitly include
+the system GLU header for builds using GLEW packages that omit it. The installed
+binary notices for Core, FTGL, TinyXML and the embedded ImGui fonts are in
+`DESKTOP-NOTICES.md`.
 
 The engine changes are in Gource's `src/formats/{commitlog,custom}.h`,
 `src/{file,gource,user}.{h,cpp}` and Logstalgia's

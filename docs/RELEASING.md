@@ -70,6 +70,13 @@ desktop session tests. To include the real-node regtest in CTest, add
 Bitcoin Core build with ZMQ and wallet support. The test starts a private
 regtest with a temporary data directory.
 
+To connect to a local Bitcoin Core or Bitcoin Roots node, launch the viewer
+without `--demo` and open the **Node** tab. Startup checks the default mainnet
+cookie's file metadata and the loopback TCP port. **Test Connection** verifies
+the cookie and chain over RPC. **Connect** starts collection after a successful
+test with the current settings. Edit the network, port, data directory or cookie
+to connect to a custom local node. Desktop RPC supports direct loopback only.
+
 ### Linux
 
 On Debian or Ubuntu, install the CLI and graphics development packages:
@@ -149,8 +156,9 @@ native runners. They archive the prefix and launch the extracted viewer from
 an unrelated directory at a path containing spaces and Unicode characters.
 Each run records the package checksum, OS, OpenGL renderer and version, logical
 and drawable size, and overlay scale. The Linux CI check uses Xvfb and Mesa
-software rendering. A hardware check must run in a graphical session using
-the system driver.
+software rendering. Native X11 input also exercises startup prefill, explicit
+verification and connection against an owned loopback fixture. A hardware check
+must run in a graphical session using the system driver.
 
 To repeat the installed smoke against a local prefix:
 

@@ -2,6 +2,12 @@
 #define CORE_GL_H
 
 #include <GL/glew.h>
+// Some GLEW packages deliberately omit GLU declarations.
+#ifdef __APPLE__
+#include <OpenGL/glu.h>
+#else
+#include <GL/glu.h>
+#endif
 
 #define PRINT_GL_ERRORS
 

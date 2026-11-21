@@ -10,7 +10,9 @@ struct Panel {
     Parameters values[2];
     Parameters applied_values[2];
     std::string selected[2]{"bloom-intensity","glow-intensity"};
-    Node node;
+    NodeDraft node;
+    NodeTest tested;
+    bool open_node = false, testing = false, test_connection = false;
     bool visible = true, preview = false;
     bool focus = false;
     bool change_scene = true, apply_appearance = false, reconnect = false;

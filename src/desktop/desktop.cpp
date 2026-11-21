@@ -7,6 +7,7 @@
 #include <imkit/theme.h>
 #include <bitset>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 
@@ -346,6 +347,18 @@ struct Preview {
     ~Preview() { std::error_code ec; if (!dir.empty()) fs::remove_all(dir,ec); }
 };
 
+struct NodeVerification {
+    std::atomic<bool> closing{false};
+    std::future<std::pair<Node,NodeTest>> result;
+    ~NodeVerification() { closing = true; }
+
+    void start(Node node) {
+        result = std::async(std::launch::async,[this,node = std::move(node)] {
+            return std::make_pair(node,test_node(node,[this] { return closing.load(); }));
+        });
+    }
+};
+
 int run(bool preview, fs::path recording, bool smoke = false) {
     const auto assets = sdl_path(SDL_GetBasePath())/"viz-data";
     const auto prefs = sdl_path(SDL_GetPrefPath("Bitcoin Viz","Observer"));
@@ -372,10 +385,13 @@ int run(bool preview, fs::path recording, bool smoke = false) {
     {
         Panel panel;
         panel.preview = preview;
+        panel.open_node = !preview && recording.empty();
         Preview sample;
         View view(assets);
         Session session(prefs);
-        if (!preview && recording.empty()) session.connect(panel.node);
+        std::future<std::optional<Node>> suggestion;
+        if (panel.open_node) suggestion = std::async(std::launch::async,suggest_local_node);
+        NodeVerification verification;
         bool running = true;
         SceneSource observed_source;
         Uint64 last = SDL_GetPerformanceCounter();
@@ -411,6 +427,16 @@ int run(bool preview, fs::path recording, bool smoke = false) {
             }
             view.sync_drawable(drawable_width,drawable_height);
             overlay.new_frame(drawable_width,drawable_height);
+            if (suggestion.valid() && suggestion.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                if (auto node = suggestion.get(); node && !panel.testing && panel.tested.status.empty())
+                    panel.node.prefill(std::move(*node));
+            }
+            if (verification.result.valid() &&
+                verification.result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                auto [node,tested] = verification.result.get();
+                panel.testing = false;
+                if (node == panel.node.settings) panel.tested = std::move(tested);
+            }
             auto state = session.state();
             if (!recording.empty()) state = {"Recording / "+platform::utf8_path(recording.filename()),recording};
             if (panel.preview) state = {"Generated node activity",sample.open()};
@@ -444,10 +470,13 @@ int run(bool preview, fs::path recording, bool smoke = false) {
             try { view.frame(SDL_GetTicks()*.001f,std::min(dt,.1f)); }
             catch (const std::exception& e) { view.clear(); panel.error=e.what(); }
             panel.draw(state);
-            if (panel.reconnect || (!panel.preview && state.status.empty() && recording.empty())) {
-                panel.reconnect=false;
+            if (std::exchange(panel.test_connection,false)) {
+                panel.testing = true;
+                verification.start(panel.node.settings);
+            }
+            if (std::exchange(panel.reconnect,false) && panel.tested.target) {
                 recording.clear();
-                session.connect(panel.node);
+                session.connect(*panel.tested.target);
             }
             ImGui::Render();
             // The fixed-function ImGui backend reads vertices from CPU memory.

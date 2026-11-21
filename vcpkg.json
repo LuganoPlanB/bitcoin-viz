@@ -12,7 +12,10 @@
     "desktop": {
       "description": "Dependencies for the interactive desktop viewer",
       "dependencies": [
+        "boost-algorithm",
+        "boost-assign",
         "boost-filesystem",
+        "boost-format",
         {"name": "freetype", "default-features": false},
         "glew",
         "glm",
