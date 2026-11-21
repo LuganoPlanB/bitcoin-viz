@@ -12,12 +12,14 @@ CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency
 [Source and releases](https://github.com/luganoplanb/bitcoin-viz).
 The [release workflow](docs/RELEASING.md) builds Linux x86_64/arm64, macOS
 Intel/Apple Silicon, and Windows x86_64 archives with licenses, source manifests
-and SHA256 checksums. Linux release binaries use static Dyne musl builds.
+and SHA256 checksums. Linux CLI release binaries use static Dyne musl builds.
 
 ## Desktop viewer
 
-Follow the [desktop build and install recipes](docs/RELEASING.md#desktop-builds)
-for Linux, Windows or macOS. Launch the installed `bitcoin-viz-desktop` to set up
+Choose the `bitcoin-viz-desktop-v…` archive for your system when available in
+[GitHub Releases](https://github.com/luganoplanb/bitcoin-viz/releases), or follow
+the [desktop build and install recipes](docs/RELEASING.md#desktop-builds).
+Launch the installed `bitcoin-viz-desktop` to set up
 a local Bitcoin Core or Bitcoin Roots node, or pass `--demo` to preview synthetic
 activity with no node. Both renderers are built into the viewer. The desktop
 layout includes the fonts, shaders and textures it needs. It requires a system graphics driver with

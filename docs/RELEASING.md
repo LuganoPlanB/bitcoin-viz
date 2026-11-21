@@ -9,8 +9,8 @@ new commits fall back to a patch. Existing version tags remain the baseline.
 
 | Archive target | Runner | Toolchain |
 |---|---|---|
-| Linux x86_64 | Ubuntu 24.04 | Dyne musl v2.5.1, static libraries |
-| Linux arm64 | Ubuntu 24.04 | Dyne musl v2.5.1, QEMU contract execution |
+| Linux x86_64 | Ubuntu 24.04 | Static Dyne musl v2.5.1 CLI, native OpenGL desktop |
+| Linux arm64 | Ubuntu 24.04 and Ubuntu 24.04 Arm | Static Dyne musl v2.5.1 CLI with QEMU contract execution, native OpenGL desktop |
 | macOS x86_64 | macOS 15 Intel | Apple Clang, static dependency libraries, macOS 11 minimum |
 | macOS arm64 | macOS 15 Apple Silicon | Apple Clang, static dependency libraries, macOS 11 minimum |
 | Windows x86_64 | Windows Server 2022 | Visual Studio 2022, static libraries and MSVC runtime |
@@ -18,7 +18,7 @@ new commits fall back to a patch. Existing version tags remain the baseline.
 vcpkg and its baseline are pinned to the same commit. Triplets under `ci/triplets`
 select release-only static dependencies. Linux's chainload consumes the musl
 action's `CC`/`CXX` outputs without replacing vcpkg host compilers. Packages are
-cached per platform, architecture, toolchain and source pin. Linux binaries must
+cached per platform, architecture, toolchain and source pin. Linux CLI binaries must
 have no ELF interpreter. The macOS and Windows CLI builds run the native
 contracts, CLI checks and release-tool fixtures. Ubuntu also runs them under
 ASan/UBSan.
@@ -36,8 +36,13 @@ dependency copyrights, and adds `MANIFEST.json`, `VERSION`, `README.md` and
 `luganoplanb/bitcoin-viz`. Archives are named
 `bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz` (`.zip` on Windows), containing
 `bin/bitcoin-viz` or `bin/bitcoin-viz.exe` and `share/bitcoin-viz/` licenses.
+The desktop archives use `bitcoin-viz-desktop-vVERSION-PLATFORM-ARCH` with the
+same extensions. They carry the viewer, its assets and notices, and the CLI.
+Launch `bin/bitcoin-viz-desktop` on Linux, `bin/bitcoin-viz-desktop.exe` on
+Windows, or `bin/bitcoin-viz-desktop.app` on macOS. Extract the whole archive
+so the application can find its resources.
 
-`ci/release/collect.cmake` requires exactly five archives. It verifies their
+`ci/release/collect.cmake` requires five CLI and five desktop archives. It verifies their
 manifests against the expected commit, version, platform, architecture and binary
 name, then writes `SHA256SUMS`. Only after all builds and checks pass does the
 publish job tag the tested candidate and publish the complete release. Existing
@@ -151,8 +156,9 @@ the install prefix. Core can publish ZMQ sequence over a loopback TCP address.
 
 ### Installed package checks
 
-The [desktop checks](../.github/workflows/desktop.yml) build, test and install on
-native runners. They archive the prefix and launch the extracted viewer from
+The [desktop checks](../.github/workflows/desktop.yml) build, test and package on
+native runners. The release workflow calls the same checks on the versioned
+candidate and publishes the packages that passed. The checks launch the extracted viewer from
 an unrelated directory at a path containing spaces and Unicode characters.
 Each run records the package checksum, OS, OpenGL renderer and version, logical
 and drawable size, and overlay scale. The Linux CI check uses Xvfb and Mesa

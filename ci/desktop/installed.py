@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Archive a staged desktop install and smoke-test the extracted viewer."""
+"""Smoke-test the viewer extracted from a desktop release archive."""
 
 import argparse
 from hashlib import sha256
@@ -103,7 +103,7 @@ def check_windows_recording(viewer, work, env, evidence):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", type=Path)
+    parser.add_argument("archive", type=Path)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("--version", required=True, help="expected desktop version")
     parser.add_argument("--regtest-core-bin", type=Path, metavar="DIRECTORY",
@@ -120,13 +120,13 @@ def main():
 
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
-    stage = args.stage.resolve(strict=True)
-    if evidence == stage or stage in evidence.parents:
-        parser.error("the evidence directory must be outside the install tree")
+    archive = args.archive.resolve(strict=True)
     windows = sys.platform == "win32"
     macos = sys.platform == "darwin"
-    kind = "zip" if windows else "gztar"
-    archive = Path(shutil.make_archive(str(evidence / "bitcoin-viz-desktop"), kind, root_dir=stage))
+    suffix = ".zip" if windows else ".tar.gz"
+    if not archive.name.endswith(suffix):
+        parser.error(f"expected a {suffix} release archive")
+    prefix = archive.name.removesuffix(suffix)
     identity = f"{sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
     (evidence / "SHA256SUMS").write_text(identity, encoding="utf-8")
     (evidence / "platform.txt").write_text(platform.platform() + "\n", encoding="utf-8")
@@ -134,8 +134,9 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="bitcoin-viz-install-") as scratch:
         work = Path(scratch)
-        relocated = work / "Relocated viewer – café"
-        shutil.unpack_archive(archive, relocated)
+        destination = work / "Relocated viewer – café"
+        shutil.unpack_archive(archive, destination)
+        relocated = destination / prefix
         bindir = relocated / "bin"
         if macos:
             contents = bindir / "bitcoin-viz-desktop.app" / "Contents"
