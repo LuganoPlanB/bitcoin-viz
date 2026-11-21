@@ -11,6 +11,7 @@ from pathlib import Path
 import queue
 import secrets
 import socket
+from socketserver import TCPServer
 import sqlite3
 import subprocess
 import sys
@@ -78,7 +79,9 @@ class Handler(BaseHTTPRequestHandler):
 
 class NodeServer(ThreadingHTTPServer):
     allow_reuse_address = sys.platform != "win32"
-    daemon_threads = False
+    daemon_threads = True
+    block_on_close = False
+    timeout = 0.05
 
     def __init__(self, chain, genesis, port=0):
         super().__init__(("127.0.0.1", port), Handler)
@@ -90,11 +93,43 @@ class NodeServer(ThreadingHTTPServer):
         self.requests = 0
         self.holds = {}
         self.notifications = []
+        self.active = set()
+        self.active_changed = threading.Condition()
 
     def server_bind(self):
         if sys.platform == "win32":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind reverse-resolves its numeric listen address.
+        # Keep this fixture independent of the host name service.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+
+    def process_request(self, request, client_address):
+        with self.active_changed:
+            self.active.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.request_finished(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_finished(request)
+
+    def request_finished(self, request):
+        with self.active_changed:
+            self.active.discard(request)
+            self.active_changed.notify()
+
+    def drain(self):
+        with self.active_changed:
+            for request in self.active:
+                with contextlib.suppress(OSError):
+                    request.shutdown(socket.SHUT_RDWR)
+            return self.active_changed.wait_for(lambda: not self.active, timeout=3)
 
     @property
     def url(self):
@@ -111,21 +146,32 @@ class NodeServer(ThreadingHTTPServer):
 
 
 @contextlib.contextmanager
-def node_server(*args):
-    with NodeServer(*args) as server:
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+def node_server(chain, genesis, port=0):
+    print(f"Opening {chain} loopback fixture", flush=True)
+    with NodeServer(chain, genesis, port) as server:
+        stopping = threading.Event()
+
+        def serve():
+            while not stopping.is_set():
+                server.handle_request()
+
+        thread = threading.Thread(target=serve, daemon=True)
         thread.start()
+        print(f"{chain} loopback fixture ready", flush=True)
         try:
             yield server
         finally:
+            stopping.set()
             for hold in server.holds.values():
                 hold.release.set()
-            server.shutdown()
             thread.join(2)
+            drained = server.drain()
             assert not thread.is_alive(), "RPC server thread did not terminate"
+            assert drained, "RPC request threads did not settle"
             for hold in server.holds.values():
                 if hold.entered.is_set():
                     assert hold.finished.wait(2), "Held RPC did not settle"
+            print(f"{chain} loopback fixture stopped", flush=True)
 
 
 def fixture_env(root):
@@ -174,7 +220,10 @@ class SessionProcess:
 
     def request(self, command, **settings):
         self.send({"command": command, **settings})
-        line = self.replies.get(timeout=3)
+        try:
+            line = self.replies.get(timeout=3)
+        except queue.Empty as error:
+            raise RuntimeError(f"Session did not reply to {command!r}") from error
         assert line is not None, "Session test process ended during a request"
         return json.loads(line)
 
@@ -211,7 +260,7 @@ class SessionProcess:
         finally:
             if self.process.poll() is None:
                 self.process.kill()
-                self.process.wait()
+                self.process.wait(timeout=3)
             self.reader.join(2)
             self.process.stdin.close()
             self.process.stdout.close()
@@ -381,6 +430,7 @@ def sequence(executable, root, env, base):
 
 if __name__ == "__main__":
     name, executable = sys.argv[1:]
+    print(f"Starting desktop-node-{name}", flush=True)
     with tempfile.TemporaryDirectory(prefix="viz-desktop-session-") as temp:
         root = Path(temp)
         env, base = fixture_env(root)

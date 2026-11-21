@@ -1,6 +1,9 @@
 #ifndef CORE_GL_H
 #define CORE_GL_H
 
+#ifdef _WIN32
+#include <windows.h> // Keep APIENTRY defined after GLEW for the system GLU header.
+#endif
 #include <GL/glew.h>
 // Some GLEW packages deliberately omit GLU declarations.
 #ifdef __APPLE__

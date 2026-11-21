@@ -107,7 +107,7 @@ if(BUILD_TESTING)
     target_include_directories(bitcoin-viz-session-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(bitcoin-viz-session-test PRIVATE bitcoin_viz_core)
     foreach(case paths discovery switch sequence)
-      add_test(NAME desktop-node-${case} COMMAND "${Python3_EXECUTABLE}"
+      add_test(NAME desktop-node-${case} COMMAND "${Python3_EXECUTABLE}" -u -B
         "${PROJECT_SOURCE_DIR}/tests/desktop_session.py" ${case} "$<TARGET_FILE:bitcoin-viz-session-test>")
       set_tests_properties(desktop-node-${case} PROPERTIES TIMEOUT 35)
     endforeach()
@@ -117,7 +117,7 @@ if(BUILD_TESTING)
       if(NOT EXISTS "${viz_test_bitcoind}" OR NOT EXISTS "${viz_test_bitcoin_cli}")
         message(FATAL_ERROR "BITCOIN_VIZ_TEST_CORE_BIN_DIR must contain bitcoind and bitcoin-cli")
       endif()
-      add_test(NAME desktop-node-regtest COMMAND "${Python3_EXECUTABLE}" -B
+      add_test(NAME desktop-node-regtest COMMAND "${Python3_EXECUTABLE}" -u -B
         "${PROJECT_SOURCE_DIR}/tests/desktop_regtest.py" "$<TARGET_FILE:bitcoin-viz-session-test>"
         "$<TARGET_FILE:bitcoin-viz>" "${viz_test_bitcoind}" "${viz_test_bitcoin_cli}")
       set_tests_properties(desktop-node-regtest PROPERTIES TIMEOUT 85)
