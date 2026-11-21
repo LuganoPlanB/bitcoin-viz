@@ -4,6 +4,8 @@ Gource and Logstalgia, including their bundled textures and Gource's GLSL
 shaders, are distributed with their respective `COPYING` files. The vendored
 source revisions are listed in `third-party.md`. The GNU FreeFont files retain
 the upstream license and embedding exception in each `viz-data/*/fonts/README`.
+Logstalgia uses Inter, by Rasmus Andersson and the Inter Project Authors. Its
+SIL Open Font License 1.1 is in `viz-data/Logstalgia/fonts/Inter-OFL.txt`.
 
 ## Shared Core library
 

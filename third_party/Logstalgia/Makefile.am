@@ -55,5 +55,6 @@ if FONTDIR
 AM_CPPFLAGS += -DSDLAPP_FONT_DIR=\"$(sdlappfontdir)\"
 else
 fontsdir = $(pkgdatadir)/fonts
-dist_fonts_DATA = data/fonts/README data/fonts/FreeMonoBold.ttf data/fonts/FreeSerif.ttf
+dist_fonts_DATA = data/fonts/README data/fonts/FreeMonoBold.ttf data/fonts/FreeSerif.ttf \
+                  data/fonts/Inter-Regular.ttf data/fonts/Inter-Bold.ttf data/fonts/Inter-OFL.txt
 endif

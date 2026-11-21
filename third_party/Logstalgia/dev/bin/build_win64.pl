@@ -176,6 +176,8 @@ my @logstalgia_files = qw(
     data/glow.tga
     data/fonts/FreeMonoBold.ttf
     data/fonts/FreeSerif.ttf
+    data/fonts/Inter-Regular.ttf
+    data/fonts/Inter-Bold.ttf
     cmd/logstalgia.cmd
     cmd/logstalgia
 );
@@ -184,6 +186,7 @@ my @logstalgia_txts = qw(
     README
     ChangeLog
     data/fonts/README
+    data/fonts/Inter-OFL.txt
     COPYING
     THANKS
 );

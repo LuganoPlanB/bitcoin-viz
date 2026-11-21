@@ -135,7 +135,8 @@ foreach(renderer Gource Logstalgia)
   set(assets "${vendor}/${renderer}/data")
   set(staged_assets "${CMAKE_CURRENT_BINARY_DIR}/assets/${renderer}")
   file(GLOB_RECURSE runtime_files RELATIVE "${assets}" CONFIGURE_DEPENDS
-    "${assets}/*.png" "${assets}/*.tga" "${assets}/*.ttf" "${assets}/*.frag" "${assets}/*.vert" "${assets}/fonts/README")
+    "${assets}/*.png" "${assets}/*.tga" "${assets}/*.ttf" "${assets}/*.frag" "${assets}/*.vert"
+    "${assets}/fonts/README" "${assets}/fonts/Inter-OFL.txt")
   foreach(asset IN LISTS runtime_files)
     configure_file("${assets}/${asset}" "${staged_assets}/${asset}" COPYONLY)
   endforeach()
