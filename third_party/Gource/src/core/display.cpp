@@ -186,6 +186,10 @@ void SDLAppDisplay::setVideoMode(int width, int height, bool fullscreen, int scr
 
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,   zbuffer_depth);
+#ifndef __APPLE__
+    // Cocoa exposes fixed-function OpenGL through its legacy 2.1 profile.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+#endif
 
     if(multi_sample > 0) {
         SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -251,16 +255,14 @@ void SDLAppDisplay::setVideoMode(int width, int height, bool fullscreen, int scr
         }
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
-
     gl_context = SDL_GL_CreateContext(sdl_window);
-
-    debugLog("opengl version %s", glGetString(GL_VERSION));
 
     if(!gl_context) {
         std::string sdlerr(SDL_GetError());
         throw SDLInitException(sdlerr);
     }
+
+    debugLog("opengl version %s", glGetString(GL_VERSION));
 
     if(vsync) SDL_GL_SetSwapInterval(1);
     else SDL_GL_SetSwapInterval(0);

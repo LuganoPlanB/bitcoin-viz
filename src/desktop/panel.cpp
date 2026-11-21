@@ -146,28 +146,41 @@ void Panel::draw(const Connection& connection) {
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Node")) {
-            const char* choices[]{"Auto (local)","Mainnet","Signet","Regtest","Testnet 4","Testnet 3"};
-            int selection = node.network + 1;
+        const auto node_flags = std::exchange(open_node,false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Node",nullptr,node_flags)) {
+            auto& settings = node.settings;
+            const auto before = settings;
+            const char* choices[]{"Detect from endpoint","Mainnet","Signet","Regtest","Testnet 4","Testnet 3"};
+            int selection = settings.network + 1;
             setting("Network",label_width,[&] {
-                if (imkit::Combo("##Network",&selection,choices,6)) node.network = selection - 1;
+                if (imkit::Combo("##Network",&selection,choices,6)) settings.network = selection - 1;
             });
-            const auto& network = networks[std::max(0,node.network)];
-            auto base = node.datadir.empty() ? bitcoin_viz::platform::default_datadir() : std::filesystem::u8path(node.datadir);
-            const auto url = "http://127.0.0.1:"+std::to_string(network.port);
-            setting("RPC URL",label_width,[&] { ImGui::InputTextWithHint("##RPC URL",url.c_str(),&node.url); });
+            const auto& network = networks[std::max(0,settings.network)];
+            const auto url = settings.network < 0 ? "Loopback HTTP URL" : "http://127.0.0.1:"+std::to_string(network.port);
+            setting("RPC URL",label_width,[&] { ImGui::InputTextWithHint("##RPC URL",url.c_str(),&settings.url); });
             setting("Data directory",label_width,[&] {
-                const auto hint = bitcoin_viz::platform::utf8_path(bitcoin_viz::platform::default_datadir());
-                ImGui::InputTextWithHint("##Data directory",hint.c_str(),&node.datadir);
+                ImGui::InputTextWithHint("##Data directory","Custom Core data directory",&settings.datadir);
             });
             setting("Cookie file",label_width,[&] {
-                const auto hint = bitcoin_viz::platform::utf8_path(base/network.directory/".cookie");
-                ImGui::InputTextWithHint("##Cookie file",hint.c_str(),&node.cookie);
+                ImGui::InputTextWithHint("##Cookie file","RPC cookie path",&settings.cookie);
             });
             setting("Sequence feed",label_width,[&] {
-                ImGui::InputTextWithHint("##Sequence feed","Auto-discover",&node.zmq);
+                ImGui::InputTextWithHint("##Sequence feed","Auto-discover",&settings.zmq);
             });
-            if (imkit::ActionButton("Connect")) { reconnect = true; preview = false; }
+            if (node.update(before)) tested = {};
+            ImGui::BeginDisabled(testing);
+            if (imkit::ActionButton("Test Connection")) { test_connection = true; tested = {}; }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!tested.target.has_value());
+            if (imkit::Button("Connect")) { reconnect = true; preview = false; }
+            ImGui::EndDisabled();
+            if (testing) ImGui::TextDisabled("Testing connection…");
+            else if (!tested.status.empty()) {
+                if (!tested.target) ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.72f,.45f,1));
+                ImGui::TextWrapped("%s",tested.status.c_str());
+                if (!tested.target) ImGui::PopStyleColor();
+            }
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

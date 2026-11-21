@@ -27,6 +27,11 @@ share the window, OpenGL context and graphics managers between the engines.
 The local changes in Gource's `src/core/{display,fxfont,shader,texture}.cpp`
 release graphics resources while the context is current and clean up partially
 loaded resources on failure.
+The desktop build also adapts the Windows CRT declarations, native font and
+shader paths, and the macOS OpenGL profile. Both Core headers explicitly include
+the system GLU header for builds using GLEW packages that omit it. The installed
+binary notices for Core, FTGL, TinyXML and the embedded ImGui fonts are in
+`DESKTOP-NOTICES.md`.
 
 The engine changes are in Gource's `src/formats/{commitlog,custom}.h`,
 `src/{file,gource,user}.{h,cpp}` and Logstalgia's
@@ -41,7 +46,8 @@ The Dear ImGui and ImKit directories contain the source subsets used by the
 viewer. ImKit 4.1.0 targets the exact vendored Dear ImGui revision. The host
 builds one Dear ImGui core with the SDL2 and OpenGL2 backends.
 
-The viewer resolves assets relative to its executable in `viz-data/Gource`
-and `viz-data/Logstalgia`. The build and install both carry the engine textures,
-Gource shaders and GNU FreeFont files. Each engine's `data/fonts/README`
+The viewer resolves `viz-data/Gource` and `viz-data/Logstalgia` beside its
+executable on Linux and Windows and under `Contents/Resources` in the macOS
+application bundle. The build and install carry the engine textures, Gource
+shaders and GNU FreeFont files. Each engine's `data/fonts/README`
 contains the fonts' GPL-3.0-or-later notice and font embedding exception.

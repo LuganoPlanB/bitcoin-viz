@@ -27,6 +27,10 @@
 
 #include "core/png_writer.h"
 #include "core/timezone.h"
+#ifdef _WIN32
+#include <commdlg.h>
+#include <direct.h>
+#endif
 
 //Logstalgia
 
@@ -384,7 +388,7 @@ void Logstalgia::saveConfig() {
         //get original directory
         char cwd_buff[1024];
 
-        if(getcwd(cwd_buff, 1024) != cwd_buff) {
+        if(_getcwd(cwd_buff, sizeof(cwd_buff)) != cwd_buff) {
             SDLAppQuit("error getting current working directory");
         }
 
@@ -408,7 +412,7 @@ void Logstalgia::saveConfig() {
         GetSaveFileName(&ofn);
 
         //change back to original directory
-        if(chdir(cwd_buff) != 0) {
+        if(_chdir(cwd_buff) != 0) {
             SDLAppQuit("error changing directory");
         }
 
@@ -441,7 +445,7 @@ void Logstalgia::loadConfig() {
     //get original directory
     char cwd_buff[1024];
 
-    if(getcwd(cwd_buff, 1024) != cwd_buff) {
+    if(_getcwd(cwd_buff, sizeof(cwd_buff)) != cwd_buff) {
         SDLAppQuit("error getting current working directory");
     }
 
@@ -465,7 +469,7 @@ void Logstalgia::loadConfig() {
     GetOpenFileName(&ofn);
 
     //change back to original directory
-    if(chdir(cwd_buff) != 0) {
+    if(_chdir(cwd_buff) != 0) {
         SDLAppQuit("error changing directory");
     }
 

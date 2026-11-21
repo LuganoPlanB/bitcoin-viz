@@ -1,8 +1,9 @@
 # Bitcoin Viz
 
-A C++17 observer for Bitcoin Core with live Gource and Logstalgia projections. It connects
-to Core's **ZMQ sequence publisher**, uses **local cookie-authenticated RPC**, and
-feeds **Gource or Logstalgia through stdin**. Signet is the default. Core and the visualizers need no patches.
+A Bitcoin Core observer with Gource and Logstalgia projections. The desktop viewer
+switches between the two renderers in one window with an ImGui overlay. The C++17
+CLI uses local cookie-authenticated RPC and Core's ZMQ sequence publisher, and
+streams projections to external visualizers through stdin. Signet is the CLI default.
 
 The application, model and tests are native C++; build and release automation use
 CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency in
@@ -12,6 +13,36 @@ CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency
 The [release workflow](docs/RELEASING.md) builds Linux x86_64/arm64, macOS
 Intel/Apple Silicon, and Windows x86_64 archives with licenses, source manifests
 and SHA256 checksums. Linux release binaries use static Dyne musl builds.
+
+## Desktop viewer
+
+Follow the [desktop build and install recipes](docs/RELEASING.md#desktop-builds)
+for Linux, Windows or macOS. Launch the installed `bitcoin-viz-desktop` to set up
+a local Bitcoin Core or Bitcoin Roots node, or pass `--demo` to preview synthetic
+activity with no node. Both renderers are built into the viewer. The desktop
+layout includes the fonts, shaders and textures it needs. It requires a system graphics driver with
+OpenGL 2.1 compatibility or later.
+
+Use **Scene** to pick Gource or Logstalgia, change the projection, and apply
+appearance settings. **F1** toggles the overlay. **Synthetic preview** switches
+to generated activity. Use **Node** to select a network or edit the RPC URL,
+data directory, cookie path, or sequence endpoint. Select **Test Connection** to
+verify the node, then **Connect** to start collecting. To open an
+existing Bitcoin Viz recording, run `bitcoin-viz-desktop --db PATH`.
+
+For an unconfigured mainnet connection, the viewer suggests plain HTTP at
+`127.0.0.1:8332` when the standard cookie is a regular file and the TCP port is
+reachable. It looks at `~/.bitcoin/.cookie` on Linux and
+`~/Library/Application Support/Bitcoin/.cookie` on macOS. On Windows it uses
+`%LOCALAPPDATA%\Bitcoin\.cookie`, with preference for an existing regular
+`%APPDATA%\Bitcoin\.cookie`. **Test Connection** reads the cookie and sends RPC.
+Changing the endpoint clears the suggested cookie. For a custom endpoint, choose
+a cookie or data directory. Desktop RPC connects directly to loopback.
+
+If the viewer discovers a sequence publisher, it uses the publisher with RPC for
+reconciliation. With RPC alone it polls snapshots, so membership changes that
+begin and end between polls can be missed. Protocol traffic shows per-peer byte
+deltas. The UTXO scene covers observed outputs within the configured window.
 
 | Mode | The scene shows | Sources |
 |---|---|---|

@@ -1,0 +1,118 @@
+name: Bitcoin Viz desktop checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_COMMIT: 80aae04504a834399456d74605204bfe514762bf
+
+jobs:
+  native:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            preset: desktop
+            core_archive: bitcoin-32.1-x86_64-linux-gnu.tar.gz
+            core_sha256: 61545c17c3120fb7412f896d248b11993af04ec8817aad3649c55b2afb044963
+          - runner: macos-15
+            preset: desktop-macos
+            arch: arm64
+            triplet: arm64-osx-release
+            core_archive: bitcoin-32.1-arm64-apple-darwin.tar.gz
+            core_sha256: cd3dcdacb4ff861e862b2d7df4786ecef66472e2468dca1673a70dd761e064e7
+          - runner: macos-15-intel
+            preset: desktop-macos
+            arch: x86_64
+            triplet: x64-osx-release
+            core_archive: bitcoin-32.1-x86_64-apple-darwin.tar.gz
+            core_sha256: 53b1e6ffd92843ca82ef4a737d7a53cb0a9fab15816a417a41f12fc954071447
+          - runner: windows-2022
+            preset: desktop-windows
+            core_archive: bitcoin-32.1-win64.zip
+            core_sha256: b5b0c2cd007d69e96880907c79f9ae19ae82728f95fc8c923b4a07dab795b45d
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libsqlite3-dev libzmq3-dev libcurl4-openssl-dev libssl-dev \
+            libsdl2-dev libsdl2-image-dev libglew-dev libgl1-mesa-dev libglu1-mesa-dev libglm-dev \
+            libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev xvfb xauth xdotool ffmpeg
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: runner.os != 'Linux'
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: .tools/vcpkg
+      - name: Bootstrap macOS vcpkg
+        if: runner.os == 'macOS'
+        run: .tools/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Bootstrap Windows vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\.tools\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - name: Extract pinned Bitcoin Core regtest fixture
+        env:
+          CORE_ARCHIVE: ${{ matrix.core_archive }}
+          CORE_SHA256: ${{ matrix.core_sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/viz-core" "$RUNNER_TEMP/viz-evidence"
+          cd "$RUNNER_TEMP/viz-core"
+          curl --fail --silent --show-error --location --max-time 240 \
+            --output "$CORE_ARCHIVE" "https://bitcoincore.org/bin/bitcoin-core-32.1/$CORE_ARCHIVE"
+          python -c 'from hashlib import sha256; from pathlib import Path; import sys; sys.exit(sha256(Path(sys.argv[1]).read_bytes()).hexdigest() != sys.argv[2])' \
+            "$CORE_ARCHIVE" "$CORE_SHA256"
+          cmake -E tar xf "$CORE_ARCHIVE"
+      - name: Build desktop and execute CTest
+        env:
+          PRESET: ${{ matrix.preset }}
+          OSX_ARCH: ${{ matrix.arch }}
+          TRIPLET: ${{ matrix.triplet }}
+          VCPKG_ROOT: ${{ github.workspace }}/.tools/vcpkg
+        run: |
+          configure=(-DBITCOIN_VIZ_TEST_CORE_BIN_DIR="$RUNNER_TEMP/viz-core/bitcoin-32.1/bin")
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            configure+=(-DCMAKE_OSX_ARCHITECTURES="$OSX_ARCH" -DVCPKG_TARGET_TRIPLET="$TRIPLET")
+          fi
+          cmake --preset "$PRESET" "${configure[@]}"
+          cmake --build --preset "$PRESET" --parallel 2
+          ctest --preset "$PRESET" --output-junit "$RUNNER_TEMP/viz-evidence/ctest.xml"
+          cmake --install "build/$PRESET" --config Release --prefix "$RUNNER_TEMP/Desktop install"
+      - name: Smoke-test the extracted application
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          smoke=()
+          if [[ "$RUNNER_OS" == Linux ]]; then smoke+=(--software-x11); fi
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            mesa_name=mesa3d-25.3.6-release-msvc.7z
+            mesa_archive="$RUNNER_TEMP/$mesa_name"
+            curl --fail --silent --show-error --location --max-time 180 --output "$mesa_archive" \
+              "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/$mesa_name"
+            smoke+=(--windows-software-gl "$mesa_archive")
+          fi
+          python -B ci/desktop/installed.py "$RUNNER_TEMP/Desktop install" "$RUNNER_TEMP/viz-evidence" \
+            --version "$version" --regtest-core-bin "$RUNNER_TEMP/viz-core/bitcoin-32.1/bin" "${smoke[@]}"
+      - name: Exercise the Linux overlay via native input
+        if: runner.os == 'Linux'
+        run: |
+          viewer="$RUNNER_TEMP/Desktop install/bin/bitcoin-viz-desktop"
+          python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/overlay" --scale 100
+          python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/startup" --scale 100 --startup
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: desktop-${{ matrix.runner }}
+          path: ${{ runner.temp }}/viz-evidence/
+          if-no-files-found: warn
