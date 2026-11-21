@@ -61,27 +61,30 @@ void Panel::toggle() {
     if (!visible) ImGui::SetWindowFocus(nullptr);
 }
 
-void Panel::draw(const Connection& connection) {
+void Panel::draw(const Connection& connection, bool fullscreen) {
     if (!visible) return;
     const auto& style = ImGui::GetStyle();
-    const auto viewport = ImGui::GetMainViewport()->WorkSize;
+    const auto& viewport = *ImGui::GetMainViewport();
     const auto margin = 10 * style.FontScaleMain;
-    const auto width = std::min({362 * style.FontScaleMain,viewport.x - 2 * margin,
-        std::max(278 * style.FontScaleMain,viewport.x * .55f)});
-    const auto max_height = viewport.y - 2 * margin;
-    ImGui::SetNextWindowPos({margin,margin});
+    const auto width = std::min({362 * style.FontScaleMain,viewport.WorkSize.x - 2 * margin,
+        std::max(278 * style.FontScaleMain,viewport.WorkSize.x * .55f)});
+    const auto max_height = viewport.WorkSize.y - 2 * margin;
+    ImGui::SetNextWindowPos({viewport.WorkPos.x+margin,viewport.WorkPos.y+margin},ImGuiCond_Once);
     ImGui::SetNextWindowSizeConstraints({width,0},{width,max_height});
     ImGui::SetNextWindowBgAlpha(.97f);
     if (std::exchange(focus,false)) ImGui::SetNextWindowFocus();
     const auto flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+        ImGuiWindowFlags_NoSavedSettings;
     if (!ImGui::Begin("Bitcoin Viz",&visible,flags)) { ImGui::End(); return; }
     if (imkit::Checkbox("Synthetic preview",&preview)) change_scene = true;
-    constexpr const char* shortcut = "F1: Hide";
-    const float shortcut_width = ImGui::CalcTextSize(shortcut).x;
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f,ImGui::GetContentRegionAvail().x-shortcut_width));
-    ImGui::TextDisabled("%s",shortcut);
+    const float preview_right = ImGui::GetItemRectMax().x;
+    ImGui::SetItemTooltip("Show generated Bitcoin activity. Turn off to return to your node or recording.");
+    constexpr const char* fullscreen_label = "Fullscreen (F)";
+    const float switch_width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(fullscreen_label).x;
+    const float content_right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    if (preview_right + style.ItemSpacing.x + switch_width <= content_right) ImGui::SameLine();
+    if (imkit::Switch(fullscreen_label,&fullscreen)) toggle_fullscreen = true;
+    if (!fullscreen_error.empty()) ImGui::TextWrapped("%s",fullscreen_error.c_str());
     if (connection.status.starts_with("Retrying / ")) {
         ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.72f,.45f,1));
         ImGui::TextWrapped("%s",connection.status.c_str());

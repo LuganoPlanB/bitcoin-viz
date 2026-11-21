@@ -41,6 +41,7 @@ public:
         context = ImGui::CreateContext();
         auto& io = ImGui::GetIO();
         io.IniFilename = nullptr;
+        io.ConfigWindowsMoveFromTitleBarOnly = true;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         platform_ready = ImGui_ImplSDL2_InitForOpenGL(display.sdl_window,display.gl_context);
         if (platform_ready) renderer_ready = ImGui_ImplOpenGL2_Init();
@@ -480,7 +481,10 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             last = now;
             try { view.frame(SDL_GetTicks()*.001f,std::min(dt,.1f)); }
             catch (const std::exception& e) { view.clear(); panel.error=e.what(); }
-            panel.draw(state);
+            const bool fullscreen = (SDL_GetWindowFlags(display.sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
+            panel.draw(state,fullscreen);
+            const bool fullscreen_shortcut = ImGui::Shortcut(ImGuiKey_F,ImGuiInputFlags_RouteGlobal);
+            const bool fullscreen_requested = std::exchange(panel.toggle_fullscreen,false) || fullscreen_shortcut;
             if (std::exchange(panel.test_connection,false)) {
                 panel.testing = true;
                 verification.start(panel.node.settings);
@@ -502,6 +506,13 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             }
             ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
             display.update();
+            if (fullscreen_requested) {
+                panel.fullscreen_error.clear();
+                if (SDL_SetWindowFullscreen(display.sdl_window,fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+                    panel.fullscreen_error = std::string("Cannot change fullscreen mode: ") + SDL_GetError();
+                    std::cerr << panel.fullscreen_error << '\n';
+                }
+            }
             if (smoke) {
                 if (!panel.error.empty()) throw std::runtime_error(panel.error);
                 const auto& active = view.current();

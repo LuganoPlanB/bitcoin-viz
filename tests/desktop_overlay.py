@@ -205,6 +205,47 @@ def wait_for_fixture(node, data):
     wait_for("fixture chain synchronization", synchronized)
 
 
+def exercise_window_controls(view):
+    windowed_size = f"{view.width}x{view.height}"
+    desktop_width, desktop_height = view.xdo("getdisplaygeometry").split()
+    desktop_size = f"{desktop_width}x{desktop_height}"
+
+    def at_size(size):
+        sizes = [line for line in view.log().splitlines() if line.startswith("Overlay: ")]
+        # Bare Xvfb has no window manager to apply the fullscreen geometry.
+        return sizes[-1].startswith(f"Overlay: {size} logical, {size} drawable,")
+
+    view.click(175, 167)  # RPC URL
+    view.key("f")
+    assert at_size(windowed_size), "Typing f in the RPC URL toggled fullscreen"
+
+    scale = view.scale / 100
+    offset_x, offset_y = 125, 45
+    view.pointer(round(125 * scale), round(23 * scale))
+    view.xdo("mousedown", 1)
+    try:
+        time.sleep(0.12)
+        view.pointer(round((125 + offset_x) * scale), round((23 + offset_y) * scale))
+    finally:
+        view.xdo("mouseup", 1)
+    view.key("F1")
+    view.key("F1")
+    view.click(184 + offset_x, 55 + offset_y)  # Fullscreen in the moved overlay
+    wait_for("fullscreen switch", lambda: at_size(desktop_size))
+
+    view.key("F1")
+    view.key("f")
+    wait_for("F leaving fullscreen", lambda: at_size(windowed_size))
+    fullscreen_frames = view.log().count(f"Overlay: {desktop_size} logical,")
+    view.hold("f", 0.8)
+    wait_for("F entering fullscreen", lambda: at_size(desktop_size))
+    assert view.log().count(f"Overlay: {desktop_size} logical,") == fullscreen_frames + 1
+    view.key("f")
+    wait_for("F restoring the window size", lambda: at_size(windowed_size))
+    assert view.find_window() == view.window
+    print("Moved panel retained its position. Fullscreen switch and F reused the native window.", flush=True)
+
+
 def exercise(view, node, data, cookie):
     view.until_log("Scene: Gource / state")
 
@@ -331,6 +372,7 @@ def exercise(view, node, data, cookie):
     view.until_log("Scene: Logstalgia / mempool", 2)
     assert node.attempts > 0 and view.find_window() == view.window
     view.capture("node-connected")
+    exercise_window_controls(view)
     print(
         f"{width}x{height} at {view.scale}%: Gource {changed_tree} and Logstalgia {changed_flow} changed pixels. "
         f"Camera while editing/released: {captured_change:.2f}/{free_change:.2f} px. "

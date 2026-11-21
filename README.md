@@ -27,11 +27,14 @@ layout includes the fonts, shaders and textures it needs. It requires a system g
 OpenGL 2.1 compatibility or later.
 
 Use **Scene** to pick Gource or Logstalgia, change the projection, and apply
-appearance settings. **F1** toggles the overlay. **Synthetic preview** switches
-to generated activity. Use **Node** to select a network or edit the RPC URL,
-data directory, cookie path, or sequence endpoint. Select **Test Connection** to
-verify the node, then **Connect** to start collecting. To open an
-existing Bitcoin Viz recording, run `bitcoin-viz-desktop --db PATH`.
+appearance settings. **F1** toggles the overlay. Drag its title bar to move it.
+Use **Fullscreen** or press **F** to switch window modes. **Synthetic preview**
+shows generated activity so you can try the visualizations without a node.
+Turn it off to return to your node or recording. Use **Node** to select a
+network or edit the RPC URL, data directory, cookie path, or sequence endpoint.
+Select **Test Connection** to verify the node, then **Connect** to start
+collecting. To open an existing Bitcoin Viz recording, run
+`bitcoin-viz-desktop --db PATH`.
 
 For an unconfigured mainnet connection, the viewer suggests plain HTTP at
 `127.0.0.1:8332` when the standard cookie is a regular file and the TCP port is
