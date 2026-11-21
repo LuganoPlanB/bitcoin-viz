@@ -10,13 +10,14 @@ CMake. Sources live in `src/`, tests in `tests/`, and the pinned JSON dependency
 `third_party/`. Licensed GPL-3.0-or-later; see [LICENSE](LICENSE).
 
 [Source and releases](https://github.com/luganoplanb/bitcoin-viz).
-The [release workflow](docs/RELEASING.md) builds Linux x86_64/arm64, macOS
-Intel/Apple Silicon, and Windows x86_64 archives with licenses, source manifests
-and SHA256 checksums. Linux CLI release binaries use static Dyne musl builds.
+The [release workflow](docs/RELEASING.md) packages the CLI and desktop viewer
+together for Linux x86_64/arm64, macOS Intel/Apple Silicon, and Windows x86_64.
+Each archive includes licenses and a source manifest. Linux packages use the
+system's shared libraries.
 
 ## Desktop viewer
 
-Choose the `bitcoin-viz-desktop-v…` archive for your system when available in
+Choose the combined `bitcoin-viz-v…` archive for your system from
 [GitHub Releases](https://github.com/luganoplanb/bitcoin-viz/releases), or follow
 the [desktop build and install recipes](docs/RELEASING.md#desktop-builds).
 Launch the installed `bitcoin-viz-desktop` to set up

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Smoke-test the viewer extracted from a desktop release archive."""
+"""Smoke-test both executables extracted from a release archive."""
 
 import argparse
 from hashlib import sha256
@@ -175,6 +175,10 @@ def main():
         elif not windows:
             run(["ldd", viewer], work, env, evidence / "linkage.log")
 
+        collector = bindir / ("bitcoin-viz.exe" if windows else "bitcoin-viz")
+        cli_version = run([collector, "--version"], work, env, evidence / "cli-version.log").strip()
+        if cli_version != f"{args.version} (C++17)":
+            sys.exit(f"Expected collector {args.version} (C++17), observed {cli_version}")
         version = run([viewer, "--version"], work, env, evidence / "version.log").strip()
         if version != args.version:
             sys.exit(f"Expected viewer {args.version}, observed {version}")
