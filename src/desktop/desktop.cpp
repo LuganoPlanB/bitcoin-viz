@@ -526,27 +526,32 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
     return smoke ? 1 : 0;
 }
 }
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     try {
         bitcoin_viz::platform::initialize_process();
         SDL_SetMainReady();
         if (argc==1) return run(false,{});
-        if (argc==2 && std::string(argv[1])=="--demo") return run(true,{});
-        if (argc==2 && std::string(argv[1])=="--smoke-test") return run(true,{},true);
-        if (argc==3 && std::string(argv[1])=="--smoke-test" && std::string(argv[2])=="--regtest") {
+        const auto option = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path{};
+        if (argc==2 && option=="--demo") return run(true,{});
+        if (argc==2 && option=="--smoke-test") return run(true,{},true);
+        if (argc==3 && option=="--smoke-test" && std::filesystem::path(argv[2])=="--regtest") {
             std::string line;
             if (!std::getline(std::cin,line)) throw std::runtime_error("Regtest smoke requires a fixture on stdin");
             const auto fixture = bitcoin_viz::Json::parse(line);
             return run(false,{},true,studio::Node{2,fixture.at("datadir").get<std::string>(),
                 fixture.at("cookie").get<std::string>(),fixture.at("rpc_url").get<std::string>(),{}});
         }
-        if (argc==2 && std::string(argv[1])=="--version") {
+        if (argc==2 && option=="--version") {
             std::cout << BITCOIN_VIZ_VERSION << '\n';
             return 0;
         }
-        if (argc==3 && std::string(argv[1])=="--db") return run(false,std::filesystem::u8path(argv[2]));
+        if (argc==3 && option=="--db") return run(false,std::filesystem::path(argv[2]));
         std::cerr << "Usage: bitcoin-viz-desktop [--demo | --db PATH | --version | --smoke-test]\n";
-        return argc==2 && std::string(argv[1])=="--help" ? 0 : 1;
+        return argc==2 && option=="--help" ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "Bitcoin Viz: " << e.what() << '\n';
 #if defined(_WIN32) || defined(__APPLE__)

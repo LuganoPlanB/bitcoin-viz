@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 WINDOWS_MESA_SHA256 = "ca56d92bb2254a9a25557c95cfe27f02071a77b26daff4cbf9bc125ed3347fb5"
@@ -73,6 +74,31 @@ def check_smoke(result, projection, windows_software):
         renderer = next((line for line in result.splitlines() if line.startswith("OpenGL: ")), "")
         if not any(driver in renderer.lower() for driver in ("llvmpipe", "softpipe")):
             sys.exit(f"Expected a Mesa software renderer, observed {renderer!r}")
+
+
+def check_windows_recording(viewer, work, env, evidence):
+    collector = viewer.with_name("bitcoin-viz.exe")
+    seed = work / "recording.sqlite"
+    # The CLI creates the fixture using a portable relative filename.
+    run([collector, "demo", "--db", seed.name], work, env, evidence / "recording-fixture.log")
+    recording = seed.with_name("recording 録画 📈.sqlite")
+    seed.rename(recording)
+    log = evidence / "viewer-recording.log"
+    with log.open("wb") as output, subprocess.Popen(
+        [viewer, "--db", recording], cwd=work, env=env, stdout=output, stderr=subprocess.STDOUT,
+    ) as viewer_process:
+        try:
+            deadline = time.monotonic() + 15
+            while viewer_process.poll() is None and time.monotonic() < deadline:
+                if b"Scene: Gource / state" in log.read_bytes():
+                    print("Desktop opened Unicode recording through --db", flush=True)
+                    return
+                time.sleep(0.05)
+            raise RuntimeError(f"Viewer did not open Unicode recording: {log.read_text('utf-8', errors='replace')}")
+        finally:
+            if viewer_process.poll() is None:
+                viewer_process.kill()
+            viewer_process.wait(timeout=5)
 
 
 def main():
@@ -161,6 +187,8 @@ def main():
             env["GALLIUM_DRIVER"] = "llvmpipe"
         result = run(smoke, work, env, evidence / "viewer.log")
         check_smoke(result, "traffic", args.windows_software_gl)
+        if windows:
+            check_windows_recording(viewer, work, env, evidence)
         if args.regtest_core_bin:
             result = run_regtest_smoke(smoke, args.regtest_core_bin, work, env, evidence)
             check_smoke(result, "blocks", args.windows_software_gl)
