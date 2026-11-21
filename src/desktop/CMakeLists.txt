@@ -73,6 +73,9 @@ endif()
 
 add_executable(bitcoin-viz-desktop desktop.cpp panel.cpp session.cpp)
 target_link_libraries(bitcoin-viz-desktop PRIVATE viz_gource viz_logstalgia viz_imgui bitcoin_viz_core)
+if(MINGW)
+  target_link_options(bitcoin-viz-desktop PRIVATE -municode)
+endif()
 set_target_properties(bitcoin-viz-desktop PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(APPLE)
   set_target_properties(bitcoin-viz-desktop PROPERTIES
