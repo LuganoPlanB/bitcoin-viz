@@ -6,6 +6,7 @@
 #include "Gource/src/gource_settings.h"
 #include "Logstalgia/src/custom.h"
 #include "Logstalgia/src/settings.h"
+#include "Logstalgia/src/summarizer.h"
 #include <array>
 #include <iostream>
 
@@ -41,7 +42,7 @@ struct Fixture {
             store.exec("UPDATE events SET observed_ns=? WHERE id=?",{1700000000000000000LL,id});
             return id;
         };
-        const auto traffic = event("peer.message.incoming",{{"command","headers"},{"fidelity","recorded"},{"size_bytes",517}});
+        const auto traffic = event("peer.message.incoming",{{"command","headers"},{"fidelity","aggregate-bytes"},{"size_bytes",517}});
         const auto admitted = event("mempool.add",{{"metadata",{{"band","5-10"}}}});
         const auto block = event("chain.connect",{{"height",812345},{"size_bytes",1200}});
         const auto coin = event("utxo.create",{{"coin",{{"script","0014"+std::string(40,'e')}}}});
@@ -85,7 +86,7 @@ void projections(const fs::path& path) {
         std::cout << "Gource / " << mode << ": " << files.size() << " parsed files\n";
     }
 
-    const std::vector<std::string> paths{"/traffic/recorded/incoming/headers","/mempool/admitted/5-10",
+    const std::vector<std::string> paths{"/traffic/aggregate-bytes/incoming/headers","/mempool/admitted/5-10",
         "/chain/connected/812345","/utxo/create/p2wpkh","/observer/resync/fixture"};
     const std::vector<std::string> codes{"RX","ADMIT","BLOCK","CREATE","RESYNC"};
     const std::vector<std::string> paddles{"incoming","mempool","chain","utxo","observer"};
@@ -110,7 +111,39 @@ void projections(const fs::path& path) {
     }
 }
 
+void label_elision() {
+    check(elide_event_label("path/report.txt",{{"path/",".txt"}}) == "report","Expected both affixes to be elided");
+    check(elide_event_label("path/report.json",{{"path/",".txt"},{ {}, ".json"}}) == "path/report",
+        "Rules must match both affixes before taking effect");
+    check(elide_event_label("path/",{{"path/",{}}}) == "path/","Elision removed the entire label");
+
+    const std::string path = "/traffic/aggregate-bytes/incoming/headers";
+    auto filter = logstalgia_label_formatter("traffic");
+    check(filter("/traffic/message-capture/incoming/headers") == "/traffic/message-capture/incoming/headers",
+        "Traffic label elision changed a captured message");
+    check(filter("/traffic/aggregate-bytes-extra/incoming/tx") == "/traffic/aggregate-bytes-extra/incoming/tx",
+        "Traffic label elision matched a partial path component");
+
+    SummRow row;
+    row.str = path;
+    row.abbreviated = false;
+    Summarizer traffic(FXFont(nullptr),100,0,0,1.0f,"^/traffic/aggregate-bytes/","",filter);
+    check(traffic.formatLabel(row) == "incoming/headers","Logstalgia still displays the aggregate path prefix");
+    check(traffic.supportedString(row.str) && row.str == path,"The display filter changed the group URI");
+    row.str = "/traffic/aggregate-bytes/incoming/";
+    row.abbreviated = true;
+    row.refs = 2;
+    row.expanded = {path,"/traffic/aggregate-bytes/incoming/tx"};
+    traffic.setShowCount(true);
+    check(traffic.formatLabel(row) == "002 incoming/* (2)" && row.expanded.front() == path,
+        "Label elision changed the count, abbreviation, or hover detail");
+
+    for (const auto* mode : {"mempool","blocks","utxo","all"})
+        check(!logstalgia_label_formatter(mode),std::string("Unexpected label filter for ") + mode);
+}
+
 void validation() {
+    label_elision();
     for (const auto* mode : {"overview","track"}) {
         const auto appearance = validate_gource_parameters({{"camera-mode",mode},{"time-scale","2.5"},
             {"background-colour","234567"},{"file-filter","fee-a\n\nfee-b\r\n"}});
@@ -146,13 +179,14 @@ struct DisplayScope {
 };
 struct TestScene {
     Scene scene;
-    TestScene(const fs::path& vendor, bool is_logstalgia, Lines& lines, const Parameters& options) {
+    TestScene(const fs::path& vendor, bool is_logstalgia, Lines& lines, const Parameters& options,
+              std::string_view projection = {}) {
         const auto path = platform::utf8_path(vendor/(is_logstalgia ? "Logstalgia" : "Gource")/"data") + "/";
         gSDLAppResourceDir = path;
         texturemanager.setDir(path);
         fontmanager.setDir(path+"fonts/");
         shadermanager.setDir(path+"shaders/");
-        scene = is_logstalgia ? logstalgia_scene(lines,options) : gource_scene(lines,options);
+        scene = is_logstalgia ? logstalgia_scene(lines,options,projection) : gource_scene(lines,options);
         scene.app->init();
     }
     ~TestScene() {
@@ -191,11 +225,11 @@ void render(const fs::path& database, const fs::path& vendor) {
     display.init("Bitcoin Viz scene test",640,400,false);
     std::cout << "OpenGL: " << glGetString(GL_RENDERER) << '\n';
 
-    auto frame = [&](bool is_logstalgia, Lines lines) {
+    auto frame = [&](bool is_logstalgia, Lines lines, std::string_view projection = {}) {
         std::srand(42);
         const Parameters options = is_logstalgia ? Parameters{{"pitch-speed","0.1"},{"disable-glow","true"}}
             : Parameters{{"hide-date","true"},{"hide-mouse","true"}};
-        TestScene engine(vendor,is_logstalgia,lines,options);
+        TestScene engine(vendor,is_logstalgia,lines,options,projection);
         engine.update(90);
         return pixels();
     };
@@ -206,7 +240,7 @@ void render(const fs::path& database, const fs::path& vendor) {
         std::vector<Pixels> frames;
         for (std::size_t index=0; index<size; ++index) {
             const auto mode = modes[index];
-            auto captured = frame(is_logstalgia,records(database,is_logstalgia,mode));
+            auto captured = frame(is_logstalgia,records(database,is_logstalgia,mode),mode);
             const auto changed = changed_pixels(empty,captured);
             const auto name = std::string(is_logstalgia ? "Logstalgia / " : "Gource / ") + mode;
             check(changed > 100,name + " did not render projected data");
@@ -216,6 +250,10 @@ void render(const fs::path& database, const fs::path& vendor) {
             frames.push_back(std::move(captured));
         }
     }
+
+    const auto traffic = records(database,true,"traffic");
+    check(changed_pixels(frame(true,traffic,"traffic"),frame(true,traffic,"all")) > 100,
+        "The desktop traffic label filter did not change the rendered scene");
 
     {
         auto lines = records(database,false,"state");

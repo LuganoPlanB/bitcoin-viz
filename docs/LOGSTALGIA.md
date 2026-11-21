@@ -40,7 +40,10 @@ then suppressed by the collector. Captured sources use endpoint/file identities,
 which are not asserted to be Core peer IDs. Existing capture backlogs are read
 once; tooltips retain source time so they are distinguishable from newly arriving
 messages. Paths include `aggregate-bytes` or `message-capture` to keep the sources
-distinct. `inv`/`getdata` names do not establish what objects they refer to.
+distinct. In the desktop **Traffic** projection, the right-side labels shorten
+aggregate paths to their direction and command, such as `incoming/tx`. Hover a
+label to see the full path used for grouping. `inv`/`getdata` names do not
+establish what objects they refer to.
 
 Both incoming and outgoing records travel in Logstalgia's standard direction
 across the screen. Direction is encoded by the lane, path and RX/TX label; the

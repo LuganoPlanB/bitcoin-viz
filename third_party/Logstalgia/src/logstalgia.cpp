@@ -18,6 +18,7 @@
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <memory>
+#include <utility>
 
 #include "logstalgia.h"
 #include "settings.h"
@@ -61,7 +62,8 @@ void logstalgia_quit(std::string error) {
     SDLAppQuit(error);
 }
 
-Logstalgia::Logstalgia(const std::string& logfile, BaseLog* live_log) : SDLApp(), embedded(live_log != nullptr) {
+Logstalgia::Logstalgia(const std::string& logfile, BaseLog* live_log, Summarizer::LabelFormatter label_formatter)
+    : SDLApp(), embedded(live_log != nullptr), group_label_formatter(std::move(label_formatter)) {
     info       = false;
     paused     = false;
     retarget   = false;
@@ -1611,7 +1613,8 @@ void Logstalgia::addGroup(const std::string& group_type, const std::string& grou
     Summarizer* summarizer = 0;
 
     try {
-        summarizer = new Summarizer(fontSmall, percent, max_depth, abbrev_depth, settings.update_rate, group_regex, group_title);
+        summarizer = new Summarizer(fontSmall, percent, max_depth, abbrev_depth, settings.update_rate,
+                                    group_regex, group_title, group_label_formatter);
 
         for(char c : separators) {
             summarizer->addDelimiter(c);
