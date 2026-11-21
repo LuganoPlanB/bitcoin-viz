@@ -194,7 +194,7 @@ jobs:
           path: .cache/vcpkg
           key: ${{ steps.dependencies.outputs.cache-primary-key }}
 
-  desktop:
+  cli:
     needs: version
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -302,8 +302,14 @@ jobs:
           path: .cache/vcpkg
           key: ${{ steps.dependencies.outputs.cache-primary-key }}
 
+  desktop:
+    needs: version
+    uses: ./.github/workflows/desktop.yml
+    with:
+      candidate: ${{ needs.version.outputs.commit }}
+
   publish:
-    needs: [version, quality, linux, desktop]
+    needs: [version, quality, linux, cli, desktop]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -3,6 +3,12 @@ name: Bitcoin Viz desktop checks
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      candidate:
+        description: Commit in the release-source bundle from the calling workflow
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,26 +29,52 @@ jobs:
         include:
           - runner: ubuntu-24.04
             preset: desktop
+            platform: linux
+            arch: x86_64
             core_archive: bitcoin-32.1-x86_64-linux-gnu.tar.gz
             core_sha256: 61545c17c3120fb7412f896d248b11993af04ec8817aad3649c55b2afb044963
+          - runner: ubuntu-24.04-arm
+            preset: desktop
+            platform: linux
+            arch: arm64
+            core_archive: bitcoin-32.1-aarch64-linux-gnu.tar.gz
+            core_sha256: 7ed37c7373eb6aa3e3f72842596a1afeba1b223717033cade9842b25773e1922
           - runner: macos-15
             preset: desktop-macos
+            platform: macos
             arch: arm64
             triplet: arm64-osx-release
             core_archive: bitcoin-32.1-arm64-apple-darwin.tar.gz
             core_sha256: cd3dcdacb4ff861e862b2d7df4786ecef66472e2468dca1673a70dd761e064e7
           - runner: macos-15-intel
             preset: desktop-macos
+            platform: macos
             arch: x86_64
             triplet: x64-osx-release
             core_archive: bitcoin-32.1-x86_64-apple-darwin.tar.gz
             core_sha256: 53b1e6ffd92843ca82ef4a737d7a53cb0a9fab15816a417a41f12fc954071447
           - runner: windows-2022
             preset: desktop-windows
+            platform: windows
+            arch: x86_64
+            triplet: x64-windows-release
             core_archive: bitcoin-32.1-win64.zip
             core_sha256: b5b0c2cd007d69e96880907c79f9ae19ae82728f95fc8c923b4a07dab795b45d
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.candidate != ''
+        with:
+          name: release-source
+          path: .release/source
+      - name: Check out versioned release candidate
+        if: inputs.candidate != ''
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          git fetch .release/source/release.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+          git checkout --detach "$CANDIDATE"
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -90,6 +122,21 @@ jobs:
           cmake --build --preset "$PRESET" --parallel 2
           ctest --preset "$PRESET" --output-junit "$RUNNER_TEMP/viz-evidence/ctest.xml"
           cmake --install "build/$PRESET" --config Release --prefix "$RUNNER_TEMP/Desktop install"
+      - name: Package the desktop viewer
+        env:
+          PRESET: ${{ matrix.preset }}
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          TRIPLET: ${{ matrix.triplet }}
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          dependency_licenses=()
+          if [[ -n "$TRIPLET" ]]; then
+            dependency_licenses+=("-DDEPENDENCIES=build/$PRESET/vcpkg_installed/$TRIPLET")
+          fi
+          cmake -DDESKTOP=ON -DVERSION="$version" -DPLATFORM="$TARGET_PLATFORM" -DARCH="$TARGET_ARCH" \
+            -DSTAGE="$RUNNER_TEMP/Desktop install" -DOUTPUT="$RUNNER_TEMP/viz-package" \
+            "${dependency_licenses[@]}" -P ci/release/package.cmake
       - name: Smoke-test the extracted application
         run: |
           version=$(tr -d '\r\n' < VERSION)
@@ -102,7 +149,8 @@ jobs:
               "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/$mesa_name"
             smoke+=(--windows-software-gl "$mesa_archive")
           fi
-          python -B ci/desktop/installed.py "$RUNNER_TEMP/Desktop install" "$RUNNER_TEMP/viz-evidence" \
+          archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-desktop-v*)
+          python -B ci/desktop/installed.py "${archive[0]}" "$RUNNER_TEMP/viz-evidence" \
             --version "$version" --regtest-core-bin "$RUNNER_TEMP/viz-core/bitcoin-32.1/bin" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
         if: runner.os == 'Linux'
@@ -110,6 +158,11 @@ jobs:
           viewer="$RUNNER_TEMP/Desktop install/bin/bitcoin-viz-desktop"
           python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/overlay" --scale 100
           python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/startup" --scale 100 --startup
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/viz-package/bitcoin-viz-desktop-v*
+          if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
