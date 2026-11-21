@@ -157,8 +157,13 @@ an unrelated directory at a path containing spaces and Unicode characters.
 Each run records the package checksum, OS, OpenGL renderer and version, logical
 and drawable size, and overlay scale. The Linux CI check uses Xvfb and Mesa
 software rendering. Native X11 input also exercises startup prefill, explicit
-verification and connection against an owned loopback fixture. A hardware check
-must run in a graphical session using the system driver.
+verification and connection against an owned loopback fixture. Windows CI uses
+the checksum-pinned Mesa for Windows 25.3.6 MSVC build for software rendering on
+its hosted runner. The smoke harness places the two Mesa OpenGL DLLs beside the
+extracted viewer in its temporary directory. The archive contains the original
+staged application. A hardware check uses the system driver in a graphical
+session on a GPU-equipped machine. [Windows Mesa release](https://github.com/pal1000/mesa-dist-win/releases/tag/25.3.6),
+[Mesa app-local setup](https://docs.mesa3d.org/drivers/llvmpipe.html#windows).
 
 To repeat the installed smoke against a local prefix:
 

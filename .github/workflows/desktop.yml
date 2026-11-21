@@ -95,6 +95,13 @@ jobs:
           version=$(tr -d '\r\n' < VERSION)
           smoke=()
           if [[ "$RUNNER_OS" == Linux ]]; then smoke+=(--software-x11); fi
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            mesa_name=mesa3d-25.3.6-release-msvc.7z
+            mesa_archive="$RUNNER_TEMP/$mesa_name"
+            curl --fail --silent --show-error --location --max-time 180 --output "$mesa_archive" \
+              "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/$mesa_name"
+            smoke+=(--windows-software-gl "$mesa_archive")
+          fi
           python -B ci/desktop/installed.py "$RUNNER_TEMP/Desktop install" "$RUNNER_TEMP/viz-evidence" \
             --version "$version" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
