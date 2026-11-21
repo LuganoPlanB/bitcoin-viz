@@ -18,6 +18,7 @@
 #include "summarizer.h"
 
 #include <algorithm>
+#include <utility>
 
 #ifdef ASSERTS_ENABLED
  #ifdef _WIN32
@@ -482,23 +483,7 @@ void SummItem::updateRow(const SummRow& unit) {
     vec3 col = summarizer->hasColour() ? summarizer->getColour() : colourHash(unit.str);
     this->colour = vec4(col, 1.0f);
 
-    char buff[1024];
-
-    if(unit.abbreviated) {
-        if(summarizer->showCount()) {
-            snprintf(buff, 1024, "%03d %s* (%d)", unit.refs, unit.str.c_str(), (int) unit.expanded.size());
-        } else {
-            snprintf(buff, 1024, "%s* (%d)", unit.str.c_str(), (int) unit.expanded.size());
-        }
-    } else {
-        if(summarizer->showCount()) {
-            snprintf(buff, 1024, "%03d %s", unit.refs, unit.str.c_str());
-        } else {
-            snprintf(buff, 1024, "%s", unit.str.c_str());
-        }
-    }
-
-    this->displaystr = std::string(buff);
+    this->displaystr = summarizer->formatLabel(unit);
     this->width = summarizer->getFont().getWidth(displaystr);
 
 }
@@ -563,8 +548,9 @@ void SummItem::draw(float alpha) {
 
 // Summarizer
 
-Summarizer::Summarizer(FXFont font, int screen_percent, int max_depth, int abbreviation_depth, float refresh_delay, std::string matchstr, std::string title)
-    : root(this), matchre(matchstr) {
+Summarizer::Summarizer(FXFont font, int screen_percent, int max_depth, int abbreviation_depth,
+                       float refresh_delay, std::string matchstr, std::string title, LabelFormatter formatter)
+    : root(this), matchre(matchstr), label_formatter(std::move(formatter)) {
 
     pos_x = top_gap = title_top = bottom_gap = 0.0f;
 
@@ -586,6 +572,23 @@ Summarizer::Summarizer(FXFont font, int screen_percent, int max_depth, int abbre
     changed = false;
 
     incrementf = 0;
+}
+
+std::string Summarizer::formatLabel(const SummRow& row) const {
+    const auto label = label_formatter ? label_formatter(row.str) : row.str;
+    char buff[1024];
+    if(row.abbreviated) {
+        if(showCount()) {
+            snprintf(buff, sizeof(buff), "%03d %s* (%d)", row.refs, label.c_str(), (int) row.expanded.size());
+        } else {
+            snprintf(buff, sizeof(buff), "%s* (%d)", label.c_str(), (int) row.expanded.size());
+        }
+    } else if(showCount()) {
+        snprintf(buff, sizeof(buff), "%03d %s", row.refs, label.c_str());
+    } else {
+        snprintf(buff, sizeof(buff), "%s", label.c_str());
+    }
+    return buff;
 }
 
 void Summarizer::clear() {

@@ -23,6 +23,7 @@
 #include "core/regex.h"
 
 #include "textarea.h"
+#include <functional>
 
 extern const char* summ_wildcard;
 
@@ -128,6 +129,9 @@ public:
 };
 
 class Summarizer {
+public:
+    using LabelFormatter = std::function<std::string(const std::string&)>;
+
 protected:
     std::vector<SummRow> strings;
 
@@ -164,6 +168,7 @@ protected:
     std::string display_title;
     std::string prefix_filter;
     Regex matchre;
+    const LabelFormatter label_formatter;
 protected:
     static bool row_sorter(const SummRow &a, const SummRow &b);
     static bool item_sorter(const SummItem &a, const SummItem &b);
@@ -173,7 +178,9 @@ protected:
     void updateDisplayTitle();
 public:
     Summarizer(FXFont font, int percent, int max_depth, int abbreviation_depth, float refresh_delay,
-               std::string matchstr = ".*", std::string title="");
+               std::string matchstr = ".*", std::string title="", LabelFormatter label_formatter = {});
+
+    std::string formatLabel(const SummRow& row) const;
 
     void clear();
 

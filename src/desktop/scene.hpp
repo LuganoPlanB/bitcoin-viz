@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "event_labels.hpp"
 #include "sdlapp.h"
 #include "seeklog.h"
 #include "settings.h"
@@ -121,5 +122,6 @@ void apply_gource_appearance(SDLApp&, const LiveAppearance&, const Parameters& c
 void apply_logstalgia_appearance(const LiveAppearance&, const Parameters& changes);
 std::shared_ptr<RCommitLog> gource_parser(Lines&);
 Scene gource_scene(Lines&, const Parameters&);
-Scene logstalgia_scene(Lines&, const Parameters&);
+EventLabelFormatter logstalgia_label_formatter(std::string_view projection);
+Scene logstalgia_scene(Lines&, const Parameters&, std::string_view projection);
 }

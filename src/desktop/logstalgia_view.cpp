@@ -37,10 +37,17 @@ void apply_logstalgia_appearance(const LiveAppearance& appearance, const Paramet
     if (changes.count("background")) settings.background_colour = appearance.background;
 }
 
-Scene logstalgia_scene(Lines& lines, const Parameters& options) {
+EventLabelFormatter logstalgia_label_formatter(std::string_view projection) {
+    if (projection != "traffic") return {};
+    return [](const std::string& path) {
+        return std::string(elide_event_label(path,{{"/traffic/aggregate-bytes/",{}}}));
+    };
+}
+
+Scene logstalgia_scene(Lines& lines, const Parameters& options, std::string_view projection) {
     import(settings,options);
     auto input = std::make_unique<SceneInput>(lines);
-    auto app = std::make_unique<Logstalgia>("-",input.get());
+    auto app = std::make_unique<Logstalgia>("-",input.get(),logstalgia_label_formatter(projection));
     input.release(); // Logstalgia owns the stream now.
     return {{},std::move(app)};
 }

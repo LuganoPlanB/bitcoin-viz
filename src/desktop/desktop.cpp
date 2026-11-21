@@ -220,7 +220,7 @@ class View {
                 tree->snapshot();
             }
         }
-        scene = request.engine ? logstalgia_scene(lines,request.options) : gource_scene(lines,request.options);
+        scene = request.engine ? logstalgia_scene(lines,request.options,request.mode()) : gource_scene(lines,request.options);
         scene.app->init();
         std::cerr << "Scene: " << (request.engine ? "Logstalgia / " : "Gource / ") << request.mode() << '\n';
     }

@@ -113,6 +113,7 @@ class Logstalgia : public SDLApp {
     SeekLog* seeklog;
     BaseLog* streamlog;
     bool embedded;
+    const Summarizer::LabelFormatter group_label_formatter;
 
     std::list<LogEntry*> queued_entries;
     std::list<RequestBall*> balls;
@@ -192,7 +193,8 @@ class Logstalgia : public SDLApp {
     void logic(float t, float dt);
     void draw(float t, float dt);
 public:
-    Logstalgia(const std::string& logfile, BaseLog* live_log = 0);
+    Logstalgia(const std::string& logfile, BaseLog* live_log = 0,
+               Summarizer::LabelFormatter label_formatter = {});
     ~Logstalgia();
 
     void setFrameExporter(FrameExporter* exporter);
