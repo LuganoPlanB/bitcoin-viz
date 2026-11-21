@@ -18,6 +18,7 @@ Builds use this local copy and do not download dependencies.
 | [Core](https://github.com/acaudwell/Core) for Logstalgia | `f7fa400ec164f6fb36bcca5b85d2d2685cd3c7e8` | BSD-style and other notices in `Logstalgia/src/core/` |
 | [Dear ImGui](https://github.com/ocornut/imgui) | `367b2c24f399988ddafc0bb4628da0106bcc09be` (1.93.0 WIP, docking) | MIT, `imgui/LICENSE.txt` |
 | [imgui-modern-kit](https://github.com/AokiMotohide/imgui-modern-kit) | `986d8d286a74fb7b2f724b9ef5d008af139aa887` (4.1.0) | MIT, `imkit/LICENSE` and `imkit/THIRD_PARTY_NOTICES.md` |
+| [Inter](https://github.com/rsms/inter/releases/tag/v4.1) | 4.1, unmodified Regular and Bold from `extras/ttf/` | SIL OFL 1.1, `Logstalgia/data/fonts/Inter-OFL.txt` |
 
 Both engine snapshots include their pinned Core submodule trees as ordinary
 files. The two Core revisions have identical headers. Gource's revision adds
@@ -49,5 +50,5 @@ builds one Dear ImGui core with the SDL2 and OpenGL2 backends.
 The viewer resolves `viz-data/Gource` and `viz-data/Logstalgia` beside its
 executable on Linux and Windows and under `Contents/Resources` in the macOS
 application bundle. The build and install carry the engine textures, Gource
-shaders and GNU FreeFont files. Each engine's `data/fonts/README`
-contains the fonts' GPL-3.0-or-later notice and font embedding exception.
+shaders and fonts. Logstalgia uses Inter by default. Each engine's
+`data/fonts/README` contains the GNU FreeFont license and font embedding exception.

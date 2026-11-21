@@ -155,6 +155,9 @@ def main():
         for renderer in ("Gource", "Logstalgia"):
             if not (assets / renderer / "fonts" / "README").is_file():
                 sys.exit(f"Missing installed font notice for {renderer}")
+        for filename in ("Inter-Regular.ttf", "Inter-Bold.ttf", "Inter-OFL.txt"):
+            if not (assets / "Logstalgia" / "fonts" / filename).is_file():
+                sys.exit(f"Missing Logstalgia font asset {filename}")
 
         env = os.environ.copy()
         if windows:
