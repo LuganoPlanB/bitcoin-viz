@@ -76,7 +76,7 @@ def main():
         if windows:
             env["APPDATA"] = str(work / "roaming")
             env["LOCALAPPDATA"] = str(work / "local")
-            env["PATH"] = str(Path(env["SystemRoot"]) / "System32")
+            env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
         else:
             for variable in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"):
                 env.pop(variable, None)
