@@ -15,10 +15,12 @@ struct Panel {
     bool open_node = false, testing = false, test_connection = false;
     bool visible = true, preview = false;
     bool focus = false;
+    bool toggle_fullscreen = false;
     bool change_scene = true, apply_appearance = false, reconnect = false;
     int cap = 5000, applied_cap = 5000;
     std::string error;
+    std::string fullscreen_error;
     void toggle();
-    void draw(const Connection& connection);
+    void draw(const Connection& connection, bool fullscreen);
 };
 }
