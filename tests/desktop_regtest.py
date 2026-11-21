@@ -46,13 +46,13 @@ class Core:
         self.rpc_url = f"http://127.0.0.1:{self.rpc_port}"
         self.zmq_url = f"tcp://127.0.0.1:{self.zmq_port}"
 
-    def rpc(self, method, *params, wallet=None):
+    def rpc(self, method, *params, wallet=None, timeout=3):
         args = [self.cli, "-regtest", f"-datadir={self.data}", "-rpcconnect=127.0.0.1",
-                f"-rpcport={self.rpc_port}", "-rpcclienttimeout=3"]
+                f"-rpcport={self.rpc_port}", f"-rpcclienttimeout={timeout}"]
         if wallet:
             args.append(f"-rpcwallet={wallet}")
         result = subprocess.run([*args, method, *map(str, params)], text=True, capture_output=True,
-                                env=self.env, timeout=8)
+                                env=self.env, timeout=timeout + 5)
         if result.returncode:
             raise RuntimeError(f"Core RPC {method} failed ({result.returncode}): {result.stderr.strip()}")
         try:
@@ -91,7 +91,7 @@ class Core:
         finally:
             if process.poll() is None:
                 process.kill()
-                process.wait()
+                process.wait(timeout=3)
             self.process = None
 
     def __enter__(self):
@@ -118,7 +118,8 @@ def run(executable, collector, bitcoind, cli, root, env):
         assert core.rpc("getzmqnotifications") == []
         core.rpc("createwallet", wallet)
         address = core.rpc("getnewaddress", wallet=wallet)
-        core.rpc("generatetoaddress", 101, address)
+        print("Mining 101 initial regtest blocks (25-second RPC deadline)", flush=True)
+        core.rpc("generatetoaddress", 101, address, timeout=25)
 
         strict = subprocess.run([collector, "observe", "--db", str(root / "cli.sqlite"), "--datadir",
                                  str(core.data), "--network", "regtest", "--rpc-url", core.rpc_url,

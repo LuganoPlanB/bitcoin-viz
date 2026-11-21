@@ -25,6 +25,11 @@
 #include <time.h>
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 LogstalgiaSettings settings;
 
@@ -677,7 +682,11 @@ void LogstalgiaSettings::importLogstalgiaSettings(ConfFile& conffile, ConfSectio
         path = settings->getString("path");
     }
 
+#ifdef _WIN32
+    if (path.empty() && !_isatty(_fileno(stdin))) {
+#else
     if (path.empty() && !isatty(fileno(stdin))) {
+#endif
         path = "-";
     }
 

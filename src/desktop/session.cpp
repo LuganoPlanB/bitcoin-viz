@@ -2,9 +2,107 @@
 #include "session.hpp"
 #include "platform.hpp"
 #include <algorithm>
+#include <tuple>
 
 namespace studio {
 using namespace bitcoin_viz;
+namespace {
+Options resolve_node(const Node& request) {
+    if (request.network < -1 || request.network >= int(std::size(networks)))
+        throw std::runtime_error("Unknown Bitcoin network");
+    if (request.network == -1 && (request.url.empty() || request.cookie.empty()))
+        throw std::runtime_error("Detect network needs an explicit RPC URL and cookie file");
+    const auto& network = networks[std::max(0,request.network)];
+    Options options;
+    options.network = request.network == -1 ? "" : network.chain;
+    options.rpc_url = request.url.empty() ? "http://127.0.0.1:"+std::to_string(network.port) : request.url;
+    options.zmq = request.zmq;
+    options.allow_rpc_polling = true;
+    if (!request.cookie.empty()) {
+        options.cookie = std::filesystem::u8path(request.cookie);
+    } else if (!request.datadir.empty()) {
+        options.cookie = std::filesystem::u8path(request.datadir)/network.directory/".cookie";
+    } else if (!request.url.empty()) {
+        throw std::runtime_error("Enter a cookie file or data directory for this RPC URL");
+    } else {
+        options.cookie = request.network == 0 ? platform::desktop_mainnet_cookie() :
+            platform::default_datadir()/network.directory/".cookie";
+    }
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(options.cookie,error))
+        throw std::runtime_error("Cannot read RPC cookie (node may be stopped)");
+    return options;
+}
+
+void verify_chain(Options& options, RPC& rpc) {
+    const auto chain = rpc.call("getblockchaininfo").at("chain").get<std::string>();
+    if (!options.network.empty() && chain != options.network)
+        throw std::runtime_error("RPC endpoint returned another chain");
+    if (std::none_of(std::begin(networks),std::end(networks),
+                    [&](const Network& candidate){ return candidate.chain == chain; }))
+        throw std::runtime_error("RPC endpoint returned an unsupported chain");
+    options.network = chain;
+}
+}
+
+bool Node::operator==(const Node& other) const {
+    return std::tie(network,datadir,cookie,url,zmq) ==
+        std::tie(other.network,other.datadir,other.cookie,other.url,other.zmq);
+}
+
+void NodeDraft::prefill(Node suggestion) {
+    if (edited || !(settings == Node{})) return;
+    settings = std::move(suggestion);
+    suggested_cookie = true;
+}
+
+bool NodeDraft::update(const Node& previous) {
+    if (settings == previous) return false;
+    edited = true;
+    if (suggested_cookie) {
+        const bool endpoint_changed = settings.url != previous.url;
+        const bool network_changed = settings.network != previous.network;
+        const bool cookie_changed = settings.cookie != previous.cookie;
+        if (endpoint_changed || network_changed || settings.datadir != previous.datadir) {
+            if (!cookie_changed) settings.cookie.clear();
+            if (network_changed && !endpoint_changed) settings.url.clear();
+            suggested_cookie = false;
+        } else if (cookie_changed) {
+            suggested_cookie = false;
+        }
+    }
+    return true;
+}
+
+std::optional<Node> suggest_local_node() {
+    const auto cookie = platform::desktop_mainnet_cookie();
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(cookie,error)) return std::nullopt;
+    try {
+        if (!tcp_loopback_reachable(8332)) return std::nullopt;
+    } catch (const std::runtime_error&) {
+        return std::nullopt;
+    }
+    return Node{0,{},platform::utf8_path(cookie),"http://127.0.0.1:8332",{}};
+}
+
+NodeTest test_node(const Node& node, const std::function<bool()>& stopped) {
+    try {
+        auto options = resolve_node(node);
+        RPC rpc(options.rpc_url,options.cookie,stopped);
+        verify_chain(options,rpc);
+        auto target = node;
+        target.url = options.rpc_url;
+        target.cookie = platform::utf8_path(options.cookie);
+        const auto network = std::find_if(std::begin(networks),std::end(networks),
+            [&](const Network& candidate){ return candidate.chain == options.network; });
+        target.network = static_cast<int>(network-std::begin(networks));
+        return {"Verified / " + options.network,std::move(target)};
+    } catch (const std::exception& e) {
+        return {e.what(),std::nullopt};
+    }
+}
+
 Session::Session(std::filesystem::path dir) : directory(std::move(dir)), worker(&Session::run,this) {}
 Session::~Session() {
     { std::lock_guard lock(mutex); closing = true; }
@@ -30,58 +128,22 @@ void Session::observe(const Node& request, std::uint64_t current) {
         if (database) connection.database = *database;
     };
     try {
-        if (request.network < -1 || request.network >= int(std::size(networks)))
-            throw std::runtime_error("Unknown Bitcoin network");
-        const bool automatic = request.network == -1;
-        const bool explicit_pair = !request.url.empty() && !request.cookie.empty();
-        const auto base = request.datadir.empty() ? platform::default_datadir() : std::filesystem::u8path(request.datadir);
-        std::string failure = "No local node cookie found. Start Bitcoin Core or edit Node settings.";
-        for (int i=0; i<int(std::size(networks)) && !stopped(); ++i) {
-            if (!automatic && request.network != i) continue;
-            const auto& network = networks[i];
-            Options o;
-            o.network = network.chain;
-            o.cookie = request.cookie.empty() ? base/network.directory/".cookie" : std::filesystem::u8path(request.cookie);
-            o.rpc_url = request.url.empty() ? "http://127.0.0.1:"+std::to_string(network.port) : request.url;
-            o.zmq = request.zmq;
-            o.allow_rpc_polling = true;
-            std::error_code cookie_error;
-            if (!std::filesystem::is_regular_file(o.cookie,cookie_error)) {
-                if (automatic && request.cookie.empty()) continue;
-                throw std::runtime_error("Cannot read RPC cookie (node may be stopped)");
-            }
-            std::unique_ptr<RPC> rpc;
-            try {
-                rpc = std::make_unique<RPC>(o.rpc_url,o.cookie,stopped);
-                const auto chain = rpc->call("getblockchaininfo").at("chain").get<std::string>();
-                if (automatic && explicit_pair) {
-                    if (std::none_of(std::begin(networks),std::end(networks),
-                            [&](const Network& candidate){ return candidate.chain == chain; }))
-                        throw std::runtime_error("RPC endpoint returned an unsupported chain");
-                    o.network = chain;
-                } else if (chain != o.network) {
-                    throw std::runtime_error("RPC endpoint returned another chain");
-                }
-            } catch (const std::exception& e) {
-                failure = (automatic && explicit_pair ? std::string() : o.network + " / ") + e.what();
-                if (!automatic || explicit_pair) break;
-                continue;
-            }
-            if (stopped()) return;
-            o.database = directory/(o.network+"-"+hash256(o.rpc_url+"|"+platform::utf8_path(o.cookie)).substr(0,16)+".sqlite");
-            WriterLock writer(o.database);
-            Store store(o.database);
-            o.report = [&](ObserverState state, const std::string& detail) {
-                const char* phase = "Reconnecting";
-                if (state == ObserverState::synchronizing) phase = "Synchronizing";
-                if (state == ObserverState::connected) phase = "Connected";
-                publish(o.network+" / "+phase+" / "+detail,state == ObserverState::connected ? &o.database : nullptr);
-            };
-            Observer observer(store,*rpc,o);
-            observer.run(stopped);
-            return;
-        }
-        publish("Retrying / " + failure);
+        auto options = resolve_node(request);
+        RPC rpc(options.rpc_url,options.cookie,stopped);
+        verify_chain(options,rpc);
+        if (stopped()) return;
+        options.database = directory/(options.network+"-"+
+            hash256(options.rpc_url+"|"+platform::utf8_path(options.cookie)).substr(0,16)+".sqlite");
+        WriterLock writer(options.database);
+        Store store(options.database);
+        options.report = [&](ObserverState state, const std::string& detail) {
+            const char* phase = "Reconnecting";
+            if (state == ObserverState::synchronizing) phase = "Synchronizing";
+            if (state == ObserverState::connected) phase = "Connected";
+            publish(options.network+" / "+phase+" / "+detail,state == ObserverState::connected ? &options.database : nullptr);
+        };
+        Observer observer(store,rpc,options);
+        observer.run(stopped);
     } catch (const std::exception& e) {
         const std::filesystem::path empty;
         publish(std::string("Retrying / ") + e.what(),&empty);

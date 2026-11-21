@@ -3,6 +3,7 @@
 
 import base64
 import contextlib
+import ctypes as ct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import queue
 import secrets
 import socket
+from socketserver import TCPServer
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +32,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def parse_request(self):
+        self.server.requests += 1
+        return super().parse_request()
 
     def do_POST(self):
         node = self.server
@@ -73,7 +79,9 @@ class Handler(BaseHTTPRequestHandler):
 
 class NodeServer(ThreadingHTTPServer):
     allow_reuse_address = sys.platform != "win32"
-    daemon_threads = False
+    daemon_threads = True
+    block_on_close = False
+    timeout = 0.05
 
     def __init__(self, chain, genesis, port=0):
         super().__init__(("127.0.0.1", port), Handler)
@@ -82,13 +90,46 @@ class NodeServer(ThreadingHTTPServer):
         self.cookie = "__cookie__:" + secrets.token_hex(16)
         self.authorization = "Basic " + base64.b64encode(self.cookie.encode()).decode()
         self.attempts = 0
+        self.requests = 0
         self.holds = {}
         self.notifications = []
+        self.active = set()
+        self.active_changed = threading.Condition()
 
     def server_bind(self):
         if sys.platform == "win32":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind reverse-resolves its numeric listen address.
+        # Keep this fixture independent of the host name service.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+
+    def process_request(self, request, client_address):
+        with self.active_changed:
+            self.active.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.request_finished(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_finished(request)
+
+    def request_finished(self, request):
+        with self.active_changed:
+            self.active.discard(request)
+            self.active_changed.notify()
+
+    def drain(self):
+        with self.active_changed:
+            for request in self.active:
+                with contextlib.suppress(OSError):
+                    request.shutdown(socket.SHUT_RDWR)
+            return self.active_changed.wait_for(lambda: not self.active, timeout=3)
 
     @property
     def url(self):
@@ -105,34 +146,45 @@ class NodeServer(ThreadingHTTPServer):
 
 
 @contextlib.contextmanager
-def node_server(*args):
-    with NodeServer(*args) as server:
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+def node_server(chain, genesis, port=0):
+    print(f"Opening {chain} loopback fixture", flush=True)
+    with NodeServer(chain, genesis, port) as server:
+        stopping = threading.Event()
+
+        def serve():
+            while not stopping.is_set():
+                server.handle_request()
+
+        thread = threading.Thread(target=serve, daemon=True)
         thread.start()
+        print(f"{chain} loopback fixture ready", flush=True)
         try:
             yield server
         finally:
+            stopping.set()
             for hold in server.holds.values():
                 hold.release.set()
-            server.shutdown()
             thread.join(2)
+            drained = server.drain()
             assert not thread.is_alive(), "RPC server thread did not terminate"
+            assert drained, "RPC request threads did not settle"
             for hold in server.holds.values():
                 if hold.entered.is_set():
                     assert hold.finished.wait(2), "Held RPC did not settle"
+            print(f"{chain} loopback fixture stopped", flush=True)
 
 
 def fixture_env(root):
     env = os.environ.copy()
     if sys.platform == "win32":
-        env["APPDATA"] = str(root / "app data" / "Roaming")
-        env["LOCALAPPDATA"] = str(root / "app data" / "Local")
+        env["APPDATA"] = str(root / "app data café" / "Roaming")
+        env["LOCALAPPDATA"] = str(root / "app data café" / "Local")
         base = Path(env["LOCALAPPDATA"]) / "Bitcoin"
     elif sys.platform == "darwin":
-        env["HOME"] = str(root / "isolated home")
+        env["HOME"] = str(root / "isolated home café")
         base = Path(env["HOME"]) / "Library" / "Application Support" / "Bitcoin"
     else:
-        env["HOME"] = str(root / "isolated home")
+        env["HOME"] = str(root / "isolated home café")
         base = Path(env["HOME"]) / ".bitcoin"
     return env, base
 
@@ -168,7 +220,10 @@ class SessionProcess:
 
     def request(self, command, **settings):
         self.send({"command": command, **settings})
-        line = self.replies.get(timeout=3)
+        try:
+            line = self.replies.get(timeout=3)
+        except queue.Empty as error:
+            raise RuntimeError(f"Session did not reply to {command!r}") from error
         assert line is not None, "Session test process ended during a request"
         return json.loads(line)
 
@@ -205,7 +260,7 @@ class SessionProcess:
         finally:
             if self.process.poll() is None:
                 self.process.kill()
-                self.process.wait()
+                self.process.wait(timeout=3)
             self.reader.join(2)
             self.process.stdin.close()
             self.process.stdout.close()
@@ -221,42 +276,103 @@ def meta(database, key):
 def paths(executable, root, env, base):
     with SessionProcess(executable, root / "observations", env) as session:
         assert Path(session.request("datadir")) == base, "Native default data directory differs"
+        assert Path(session.request("desktop-cookie")) == base / ".cookie"
         if sys.platform == "win32":
             legacy = Path(env["APPDATA"]) / "Bitcoin"
             legacy.mkdir(parents=True)
             assert Path(session.request("datadir")) == legacy, "Existing roaming data directory was ignored"
+            legacy_cookie = legacy / ".cookie"
+            legacy_cookie.mkdir()
+            assert Path(session.request("desktop-cookie")) == base / ".cookie"
+            legacy_cookie.rmdir()
+            legacy_cookie.write_text("unused", encoding="utf-8")
+            assert Path(session.request("desktop-cookie")) == legacy_cookie
+
+
+@contextlib.contextmanager
+def file_open_watch(path):
+    if not sys.platform.startswith("linux"):
+        yield None
+        return
+    libc = ct.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    assert fd >= 0, f"inotify_init1 failed: {ct.get_errno()}"
+    try:
+        assert libc.inotify_add_watch(fd, os.fsencode(path), 0x20) >= 0, "Cannot watch cookie opens"
+
+        def opened():
+            try:
+                return bool(os.read(fd, 4096))
+            except BlockingIOError:
+                return False
+
+        yield opened
+    finally:
+        os.close(fd)
 
 
 def discovery(executable, root, env, base):
-    # Own both standard ports before writing any fixture cookie. A port collision
-    # fails the test before the Session can contact another process.
-    with node_server("main", 1, 8332) as main, node_server("signet", 2, 38332) as signet:
+    base.mkdir(parents=True)
+    cookie = base / ".cookie"
+    with socket.socket() as unlistening, SessionProcess(executable, root / "observations", env) as session:
+        unlistening.bind(("127.0.0.1", 8332))
+        cookie.write_text("malformed", encoding="utf-8")
+        assert session.request("suggest") is None, "Cookie without a listener was suggested"
+    cookie.unlink()
+
+    env.update(http_proxy="http://127.0.0.1:1", NO_PROXY="", no_proxy="")
+    with node_server("main", 1, 8332) as main, node_server("signet", 2) as custom:
         with SessionProcess(executable, root / "observations", env) as session:
-            session.request("connect")
-            assert not session.wait("No local node cookie found")["database"]
-            assert main.attempts == signet.attempts == 0
+            assert session.request("state")["generation"] == 0
+            assert session.request("suggest") is None
+            cookie.mkdir()
+            assert session.request("suggest") is None, "Directory was suggested as a regular cookie"
+            cookie.rmdir()
+            cookie.write_text("malformed", encoding="utf-8")
+            with file_open_watch(cookie) as opened:
+                suggestion = session.request("suggest")
+                assert suggestion["url"] == main.url and Path(suggestion["cookie"]) == cookie
+                assert main.requests == custom.requests == 0, "Discovery wrote HTTP to a listener"
+                assert not opened or not opened(), "Discovery opened the cookie file"
+                rejected = session.request("test", **suggestion)
+                assert not rejected["target"] and "Invalid RPC cookie" in rejected["status"]
+                assert not opened or opened(), "Explicit test did not open the cookie"
+            assert main.requests == 0
 
-            base.mkdir(parents=True)
-            (base / ".cookie").write_text("__cookie__:" + secrets.token_hex(16), encoding="utf-8")
-            session.request("connect")
-            assert not session.wait("cookie rejected")["database"], "Stale cookie published a database"
+            if os.name != "nt":
+                cookie.chmod(0)
+                try:
+                    if not os.access(cookie, os.R_OK):
+                        assert session.request("suggest") == suggestion, "Unreadable cookie was opened during discovery"
+                        assert "Cannot read RPC cookie" in session.request("test", **suggestion)["status"]
+                finally:
+                    cookie.chmod(0o600)
 
-            main.set_cookie(base / ".cookie")
-            signet.set_cookie(base / "signet" / ".cookie")
-            session.request("connect")
-            first = session.wait("main / Connected")
-            assert meta(first["database"], "genesis") == main.genesis
-            assert signet.attempts == 0, "Mainnet success did not stop discovery"
+            main.set_cookie(cookie)
+            tested = session.request("test", **suggestion)
+            assert tested["target"] == suggestion and main.requests == 1
+            assert session.request("state")["generation"] == 0, "Testing started live observation"
+            assert not (root / "observations").exists(), "Testing created an observation database"
 
-            main.chain = "regtest"
-            session.request("connect", network=0)
-            assert not session.wait("another chain")["database"], "Mismatched chain published a database"
-            session.request("connect")
-            later = session.wait("signet / Connected")
-            assert meta(later["database"], "genesis") == signet.genesis
-            assert first["database"] != later["database"], "Two discovered chains shared a database"
+            assert session.request("draft", suggestion=suggestion) == suggestion
+            manually_routed = session.request("draft", url=custom.url)
+            assert not manually_routed["cookie"], "Endpoint edit retained the suggested cookie"
+            assert not session.request("test", **manually_routed)["target"]
+            assert custom.requests == 0, "Custom endpoint received implicit credentials"
+
+            data = root / "custom data café"
+            explicit_cookie = custom.set_cookie(data / "signet" / ".cookie")
+            manual = session.request("draft", network=1, datadir=str(data), cookie=str(explicit_cookie), url=custom.url)
+            assert session.request("draft", suggestion=suggestion) == manual
+            manual_test = session.request("test", network=1, datadir=str(data), url=custom.url)
+            assert Path(manual_test["target"]["cookie"]) == explicit_cookie
+            assert not session.request("test", **dict(manual,network=0))["target"], "Wrong chain was verified"
+            assert session.request("draft", url=main.url)["cookie"] == str(explicit_cookie)
+            session.request("connect", **tested["target"])
+            observed = session.wait("main / Connected")
+            assert meta(observed["database"], "genesis") == main.genesis
             session.stop()
-            session.assert_no_credentials(main, signet)
+            session.assert_no_credentials(main,custom)
 
 
 def switch(executable, root, env, base):
@@ -273,7 +389,7 @@ def switch(executable, root, env, base):
             assert meta(old["database"], "genesis") == first.genesis
             assert first_hold.entered.wait(2), "Old RPC did not reach the held call"
 
-            new = session.request("connect", url=second.url, cookie=str(override))
+            new = session.request("connect", network=-1, url=second.url, cookie=str(override))
             assert new["generation"] == old["generation"] + 1
             assert not new["database"], "Previous database was visible after Connect"
             assert second_probe.entered.wait(3), "Old RPC delayed the new endpoint"
@@ -314,6 +430,7 @@ def sequence(executable, root, env, base):
 
 if __name__ == "__main__":
     name, executable = sys.argv[1:]
+    print(f"Starting desktop-node-{name}", flush=True)
     with tempfile.TemporaryDirectory(prefix="viz-desktop-session-") as temp:
         root = Path(temp)
         env, base = fixture_env(root)

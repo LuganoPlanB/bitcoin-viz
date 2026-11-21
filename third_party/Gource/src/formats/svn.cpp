@@ -26,6 +26,14 @@
 #include "../tinyxml/tinyxml.h"
 #endif
 
+#ifdef _WIN32
+#include <direct.h>
+#define getcwd _getcwd
+#define chdir _chdir
+#else
+#include <unistd.h>
+#endif
+
 Regex svn_xml_tag("^<\\??xml");
 Regex svn_logentry_start("^<logentry");
 Regex svn_logentry_end("^</logentry>");

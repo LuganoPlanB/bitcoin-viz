@@ -83,6 +83,20 @@ std::filesystem::path default_datadir() {
     return ".bitcoin";
 #endif
 }
+std::filesystem::path desktop_mainnet_cookie() {
+#ifdef _WIN32
+    if (const auto* roaming = _wgetenv(L"APPDATA"); roaming && *roaming) {
+        const auto legacy = std::filesystem::path(roaming)/L"Bitcoin"/L".cookie";
+        std::error_code error;
+        if (std::filesystem::is_regular_file(legacy,error)) return legacy;
+    }
+    if (const auto* local = _wgetenv(L"LOCALAPPDATA"); local && *local)
+        return std::filesystem::path(local)/L"Bitcoin"/L".cookie";
+#else
+    if (const auto* home = std::getenv("HOME"); home && *home) return default_datadir()/".cookie";
+#endif
+    return {};
+}
 CaptureFile::CaptureFile(const std::filesystem::path& path) {
 #ifdef _WIN32
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);

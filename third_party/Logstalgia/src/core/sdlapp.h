@@ -32,11 +32,9 @@
 
 #ifdef _WIN32
 
-#ifdef _WIN32_WINNT
-#undef _WIN32_WINNT
-#endif
-
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0501
+#endif
 #include "windows.h"
 #endif
 

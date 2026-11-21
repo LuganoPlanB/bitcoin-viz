@@ -20,6 +20,9 @@
 #include "../core/sdlapp.h"
 
 #include "../core/utf8/utf8.h"
+#ifdef _WIN32
+#include <io.h>
+#endif
 
 std::string RCommitLog::filter_utf8(const std::string& str) {
 
@@ -272,10 +275,11 @@ bool RCommitLog::createTempFile(std::string& temp_file) {
 #endif
 
     char tmplate[1024];
-    snprintf(tmplate, 1024, "%sgource-XXXXXX", tempdir.c_str());
+    const auto written = snprintf(tmplate, sizeof(tmplate), "%sgource-XXXXXX", tempdir.c_str());
+    if(written < 0 || written >= static_cast<int>(sizeof(tmplate))) return false;
 
 #ifdef _WIN32
-    if(mktemp(tmplate) == NULL) return false;
+    if(_mktemp_s(tmplate, sizeof(tmplate)) != 0) return false;
 #else
     if(mkstemp(tmplate) < 0) return false;
 #endif
