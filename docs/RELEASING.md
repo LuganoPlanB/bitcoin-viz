@@ -177,3 +177,7 @@ Use `python` on Windows. On Linux with `xvfb` and `xauth` installed, append
 unavailable graphics driver or display causes the smoke check to fail with a
 startup diagnostic. The desktop check workflow uploads its evidence as CI
 artifacts. The existing versioned release workflow builds CLI archives.
+
+Add `--regtest-core-bin /path/to/core/bin` to also start a disposable local
+regtest node and check both engines against its connected RPC and ZMQ session.
+The smoke harness keeps the viewer log for the live run in `viewer-regtest.log`.

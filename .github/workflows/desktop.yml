@@ -103,7 +103,7 @@ jobs:
             smoke+=(--windows-software-gl "$mesa_archive")
           fi
           python -B ci/desktop/installed.py "$RUNNER_TEMP/Desktop install" "$RUNNER_TEMP/viz-evidence" \
-            --version "$version" "${smoke[@]}"
+            --version "$version" --regtest-core-bin "$RUNNER_TEMP/viz-core/bitcoin-32.1/bin" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
         if: runner.os == 'Linux'
         run: |

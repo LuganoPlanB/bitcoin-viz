@@ -359,7 +359,7 @@ struct NodeVerification {
     }
 };
 
-int run(bool preview, fs::path recording, bool smoke = false) {
+int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node> smoke_node = {}) {
     const auto assets = sdl_path(SDL_GetBasePath())/"viz-data";
     const auto prefs = sdl_path(SDL_GetPrefPath("Bitcoin Viz","Observer"));
     const DisplayLifetime display_lifetime;
@@ -390,8 +390,14 @@ int run(bool preview, fs::path recording, bool smoke = false) {
         View view(assets);
         Session session(prefs);
         std::future<std::optional<Node>> suggestion;
-        if (panel.open_node) suggestion = std::async(std::launch::async,suggest_local_node);
         NodeVerification verification;
+        if (smoke_node) {
+            panel.node.settings = *smoke_node;
+            panel.test_connection = true;
+            panel.projection[1] = 2; // Logstalgia blocks projection for the regtest fixture.
+        } else if (panel.open_node) {
+            suggestion = std::async(std::launch::async,suggest_local_node);
+        }
         bool running = true;
         SceneSource observed_source;
         Uint64 last = SDL_GetPerformanceCounter();
@@ -400,7 +406,8 @@ int run(bool preview, fs::path recording, bool smoke = false) {
         const auto window = SDL_GetWindowID(display.sdl_window);
         while (running) {
             if (smoke && SDL_TICKS_PASSED(SDL_GetTicks(),smoke_deadline))
-                throw std::runtime_error("Timed out waiting for both desktop renderers and the overlay");
+                throw std::runtime_error("Timed out waiting for both desktop renderers and the overlay. "
+                    + session.state().status);
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 ImGui_ImplSDL2_ProcessEvent(&event);
@@ -436,11 +443,15 @@ int run(bool preview, fs::path recording, bool smoke = false) {
                 auto [node,tested] = verification.result.get();
                 panel.testing = false;
                 if (node == panel.node.settings) panel.tested = std::move(tested);
+                if (smoke_node) {
+                    if (!panel.tested.target) throw std::runtime_error("Regtest smoke connection: " + panel.tested.status);
+                    panel.reconnect = true;
+                }
             }
             auto state = session.state();
             if (!recording.empty()) state = {"Recording / "+platform::utf8_path(recording.filename()),recording};
             if (panel.preview) state = {"Generated node activity",sample.open()};
-            const SceneSource source{state.database,state.generation,panel.preview || !recording.empty()};
+            const SceneSource source{state.database,state.generation,panel.preview || !recording.empty() || bool(smoke_node)};
             const bool appearance = std::exchange(panel.apply_appearance,false);
             const bool selection = std::exchange(panel.change_scene,false);
             if (source != observed_source || selection || appearance) {
@@ -493,13 +504,17 @@ int run(bool preview, fs::path recording, bool smoke = false) {
             display.update();
             if (smoke) {
                 if (!panel.error.empty()) throw std::runtime_error(panel.error);
-                if (view.current() && ImGui::GetDrawData()->TotalVtxCount > 0) {
+                const auto& active = view.current();
+                const bool source_ready = !smoke_node ||
+                    (!state.database.empty() && state.status.starts_with("regtest / Connected / RPC + ZMQ sequence"));
+                if (active && active->source == source && source_ready && ImGui::GetDrawData()->TotalVtxCount > 0) {
                     if (SDL_GetWindowID(display.sdl_window) != window || view.current()->engine != panel.engine)
                         throw std::runtime_error("Desktop smoke test changed windows or missed an engine switch");
                     if (++smoke_frames == 4) {
                         panel.engine = 1;
                         panel.change_scene = true;
                     } else if (smoke_frames == 8) {
+                        if (smoke_node) std::cerr << "Desktop smoke node: " << state.status << '\n';
                         std::cerr << "Desktop smoke passed: Gource, Logstalgia and overlay in one OpenGL window\n";
                         return 0;
                     }
@@ -518,6 +533,13 @@ int main(int argc, char** argv) {
         if (argc==1) return run(false,{});
         if (argc==2 && std::string(argv[1])=="--demo") return run(true,{});
         if (argc==2 && std::string(argv[1])=="--smoke-test") return run(true,{},true);
+        if (argc==3 && std::string(argv[1])=="--smoke-test" && std::string(argv[2])=="--regtest") {
+            std::string line;
+            if (!std::getline(std::cin,line)) throw std::runtime_error("Regtest smoke requires a fixture on stdin");
+            const auto fixture = bitcoin_viz::Json::parse(line);
+            return run(false,{},true,studio::Node{2,fixture.at("datadir").get<std::string>(),
+                fixture.at("cookie").get<std::string>(),fixture.at("rpc_url").get<std::string>(),{}});
+        }
         if (argc==2 && std::string(argv[1])=="--version") {
             std::cout << BITCOIN_VIZ_VERSION << '\n';
             return 0;

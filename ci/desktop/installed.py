@@ -3,6 +3,7 @@
 
 import argparse
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import platform
@@ -15,10 +16,11 @@ import tempfile
 WINDOWS_MESA_SHA256 = "ca56d92bb2254a9a25557c95cfe27f02071a77b26daff4cbf9bc125ed3347fb5"
 
 
-def run(args, cwd, env, log):
+def run(args, cwd, env, log, input_text=None):
     try:
         result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace", timeout=60)
+                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+                                input=input_text, timeout=60)
     except subprocess.TimeoutExpired as error:
         log.write_bytes((error.stdout or b"") + b"\nTimed out after 60 seconds\n")
         raise
@@ -46,11 +48,40 @@ def install_windows_software_gl(archive, bindir, work, evidence):
     )
 
 
+def run_regtest_smoke(smoke, core_bin, work, env, evidence):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+    from desktop_regtest import Core
+
+    core_bin = core_bin.resolve(strict=True)
+    suffix = ".exe" if sys.platform == "win32" else ""
+    with Core(core_bin / ("bitcoind" + suffix), core_bin / ("bitcoin-cli" + suffix),
+              work / "desktop smoke node", env) as core:
+        core.start(sequence=True)
+        core.rpc("createwallet", "desktop-smoke")
+        address = core.rpc("getnewaddress", wallet="desktop-smoke")
+        core.rpc("generatetoaddress", 2, address)
+        request = json.dumps({"datadir": str(core.data), "cookie": str(core.cookie), "rpc_url": core.rpc_url})
+        return run([*smoke, "--regtest"], work, env, evidence / "viewer-regtest.log", input_text=request)
+
+
+def check_smoke(result, projection, windows_software):
+    for token in ("OpenGL: ", "Overlay: ", "Scene: Gource / state", f"Scene: Logstalgia / {projection}",
+                  "Desktop smoke passed:"):
+        if token not in result:
+            sys.exit(f"Missing viewer smoke marker {token!r}")
+    if windows_software:
+        renderer = next((line for line in result.splitlines() if line.startswith("OpenGL: ")), "")
+        if not any(driver in renderer.lower() for driver in ("llvmpipe", "softpipe")):
+            sys.exit(f"Expected a Mesa software renderer, observed {renderer!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", type=Path)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("--version", required=True, help="expected desktop version")
+    parser.add_argument("--regtest-core-bin", type=Path, metavar="DIRECTORY",
+                        help="also render the installed viewer against an isolated Bitcoin Core regtest")
     software = parser.add_mutually_exclusive_group()
     software.add_argument("--software-x11", action="store_true", help="run under Xvfb with Mesa software rendering")
     software.add_argument("--windows-software-gl", type=Path, metavar="ARCHIVE",
@@ -129,14 +160,12 @@ def main():
             install_windows_software_gl(args.windows_software_gl, bindir, work, evidence)
             env["GALLIUM_DRIVER"] = "llvmpipe"
         result = run(smoke, work, env, evidence / "viewer.log")
-        for token in ("OpenGL: ", "Overlay: ", "Scene: Gource / state", "Scene: Logstalgia / traffic",
-                      "Desktop smoke passed:"):
-            if token not in result:
-                sys.exit(f"Missing viewer smoke marker {token!r}")
-        if args.windows_software_gl:
-            renderer = next((line for line in result.splitlines() if line.startswith("OpenGL: ")), "")
-            if not any(driver in renderer.lower() for driver in ("llvmpipe", "softpipe")):
-                sys.exit(f"Expected a Mesa software renderer, observed {renderer!r}")
+        check_smoke(result, "traffic", args.windows_software_gl)
+        if args.regtest_core_bin:
+            result = run_regtest_smoke(smoke, args.regtest_core_bin, work, env, evidence)
+            check_smoke(result, "blocks", args.windows_software_gl)
+            if "Desktop smoke node: regtest / Connected / RPC + ZMQ sequence" not in result:
+                sys.exit("Missing connected regtest sequence source in the installed smoke")
 
 
 if __name__ == "__main__":
