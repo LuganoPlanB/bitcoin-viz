@@ -9,19 +9,16 @@ new commits fall back to a patch. Existing version tags remain the baseline.
 
 | Archive target | Runner | Toolchain |
 |---|---|---|
-| Linux x86_64 | Ubuntu 24.04 | Static Dyne musl v2.5.1 CLI, native OpenGL desktop |
-| Linux arm64 | Ubuntu 24.04 and Ubuntu 24.04 Arm | Static Dyne musl v2.5.1 CLI with QEMU contract execution, native OpenGL desktop |
+| Linux x86_64 | Ubuntu 24.04 | Native GCC, system shared libraries and OpenGL |
+| Linux arm64 | Ubuntu 24.04 Arm | Native GCC, system shared libraries and OpenGL |
 | macOS x86_64 | macOS 15 Intel | Apple Clang, static dependency libraries, macOS 11 minimum |
 | macOS arm64 | macOS 15 Apple Silicon | Apple Clang, static dependency libraries, macOS 11 minimum |
 | Windows x86_64 | Windows Server 2022 | Visual Studio 2022, static libraries and MSVC runtime |
 
-vcpkg and its baseline are pinned to the same commit. Triplets under `ci/triplets`
-select release-only static dependencies. Linux's chainload consumes the musl
-action's `CC`/`CXX` outputs without replacing vcpkg host compilers. Packages are
-cached per platform, architecture, toolchain and source pin. Linux CLI binaries must
-have no ELF interpreter. The macOS and Windows CLI builds run the native
-contracts, CLI checks and release-tool fixtures. Ubuntu also runs them under
-ASan/UBSan.
+vcpkg and its baseline are pinned to the same commit. The macOS and Windows
+triplets select release-only static dependencies. Each native build runs the
+contracts, CLI checks, release-tool fixtures and desktop tests. Ubuntu also runs
+the CLI tests under ASan/UBSan.
 
 ## Exact source and complete publication
 
@@ -30,21 +27,19 @@ It updates the sole version source, `VERSION`, commits it if needed, and bundles
 the exact candidate. All jobs check out that commit. CMake generates the version
 header from `VERSION`; `BITCOIN_VIZ_VERSION` can explicitly override it.
 
-`ci/release/package.cmake` packages the installed executable and licenses, gathers
+`ci/release/package.cmake` packages the installed executables and licenses, gathers
 dependency copyrights, and adds `MANIFEST.json`, `VERSION`, `README.md` and
 `SOURCE.txt`. Source links point to the exact commit in
 `luganoplanb/bitcoin-viz`. Archives are named
-`bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz` (`.zip` on Windows), containing
-`bin/bitcoin-viz` or `bin/bitcoin-viz.exe` and `share/bitcoin-viz/` licenses.
-The desktop archives use `bitcoin-viz-desktop-vVERSION-PLATFORM-ARCH` with the
-same extensions. They carry the viewer, its assets and notices, and the CLI.
+`bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz` (`.zip` on Windows). Each contains
+the CLI, the viewer, the viewer's resources and licenses.
 Launch `bin/bitcoin-viz-desktop` on Linux, `bin/bitcoin-viz-desktop.exe` on
 Windows, or `bin/bitcoin-viz-desktop.app` on macOS. Extract the whole archive
 so the application can find its resources.
 
-`ci/release/collect.cmake` requires five CLI and five desktop archives. It verifies their
-manifests against the expected commit, version, platform, architecture and binary
-name, then writes `SHA256SUMS`. Only after all builds and checks pass does the
+`ci/release/collect.cmake` requires one combined archive for each of the five
+targets. It verifies both executable paths and the version, source commit,
+platform and architecture before writing `SHA256SUMS`. Only after all builds and checks pass does the
 publish job tag the tested candidate and publish the complete release. Existing
 published assets are preserved; a draft can be resumed. If `main` still points to
 the starting commit, it is fast-forwarded to the tested version commit with
@@ -54,8 +49,8 @@ These scripts use CMake and Git, with no interpreter dependency. For a local
 installed build:
 
 ```sh
-cmake --install build/release --prefix "$PWD/.release/stage"
-cmake -DVERSION=0.3.0 -DPLATFORM=linux -DARCH=x86_64 \
+cmake --install build/desktop --prefix "$PWD/.release/stage"
+cmake -DVERSION="$(cat VERSION)" -DPLATFORM=linux -DARCH=x86_64 \
   -DSTAGE=.release/stage -DOUTPUT=.release/assets -P ci/release/package.cmake
 ```
 
@@ -68,7 +63,7 @@ separately.
 
 ## Desktop builds
 
-The interactive viewer is opt-in and uses a C++20 compiler, CMake 3.20 or
+The interactive viewer is enabled by the desktop build presets and uses a C++20 compiler, CMake 3.20 or
 later, and the system OpenGL 2.1-compatible driver. Install Python 3 for the
 desktop session tests. To include the real-node regtest in CTest, add
 `-DBITCOIN_VIZ_TEST_CORE_BIN_DIR=/path/to/core/bin` when configuring, using a

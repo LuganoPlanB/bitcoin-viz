@@ -134,7 +134,7 @@ jobs:
           if [[ -n "$TRIPLET" ]]; then
             dependency_licenses+=("-DDEPENDENCIES=build/$PRESET/vcpkg_installed/$TRIPLET")
           fi
-          cmake -DDESKTOP=ON -DVERSION="$version" -DPLATFORM="$TARGET_PLATFORM" -DARCH="$TARGET_ARCH" \
+          cmake -DVERSION="$version" -DPLATFORM="$TARGET_PLATFORM" -DARCH="$TARGET_ARCH" \
             -DSTAGE="$RUNNER_TEMP/Desktop install" -DOUTPUT="$RUNNER_TEMP/viz-package" \
             "${dependency_licenses[@]}" -P ci/release/package.cmake
       - name: Smoke-test the extracted application
@@ -149,7 +149,7 @@ jobs:
               "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/$mesa_name"
             smoke+=(--windows-software-gl "$mesa_archive")
           fi
-          archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-desktop-v*)
+          archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-v*)
           python -B ci/desktop/installed.py "${archive[0]}" "$RUNNER_TEMP/viz-evidence" \
             --version "$version" --regtest-core-bin "$RUNNER_TEMP/viz-core/bitcoin-32.1/bin" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
@@ -160,8 +160,8 @@ jobs:
           python -B tests/desktop_overlay.py "$viewer" "$RUNNER_TEMP/viz-evidence/startup" --scale 100 --startup
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: binaries-desktop-${{ matrix.platform }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/viz-package/bitcoin-viz-desktop-v*
+          name: binaries-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/viz-package/bitcoin-viz-v*
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
