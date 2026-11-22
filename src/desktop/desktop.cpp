@@ -2,6 +2,7 @@
 #include "panel.hpp"
 #include "platform.hpp"
 #include "bitcoin_viz_version.hpp"
+#include "window_video_capture.hpp"
 #include <backends/imgui_impl_opengl2.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <imkit/theme.h>
@@ -360,7 +361,70 @@ struct NodeVerification {
     }
 };
 
-int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node> smoke_node = {}) {
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+struct VideoSmoke {
+    fs::path directory;
+    unsigned take = 0;
+    bool verified = false;
+
+    void key(WindowVideoCapture& video, SDL_Keycode code) {
+        if (code == SDLK_F8) video.stop("Stopped");
+        if ((code == SDLK_F6 || code == SDLK_F7) && !video.active()) {
+            const auto path = directory / ("take-" + std::to_string(++take) + ".avi");
+            if (fs::exists(path) || !video.start(path, 95, code == SDLK_F7))
+                throw std::runtime_error("Video smoke start rejected: " + platform::utf8_path(path));
+            verified = false;
+        }
+    }
+
+    void sample(WindowVideoCapture& video, VideoPicture picture) {
+        if (verified || !video.active()) {
+            video.sample(picture);
+            return;
+        }
+        // Challenge the readback with a different buffer selection, nonpacked
+        // rows and a bound PBO. Restore the test setup before the renderer resumes.
+        GLint saved_read, saved_pbo;
+        glGetIntegerv(GL_READ_BUFFER, &saved_read);
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &saved_pbo);
+        GLuint pbo;
+        glGenBuffers(1, &pbo);
+        glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
+        glReadBuffer(GL_FRONT);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 8);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 23);
+        glPixelStorei(GL_PACK_SKIP_ROWS, 2);
+        glPixelStorei(GL_PACK_SKIP_PIXELS, 3);
+        const bool read = video.sample(picture);
+        GLint buffer, binding, alignment, length, rows, pixels;
+        glGetIntegerv(GL_READ_BUFFER, &buffer);
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &binding);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
+        glGetIntegerv(GL_PACK_ROW_LENGTH, &length);
+        glGetIntegerv(GL_PACK_SKIP_ROWS, &rows);
+        glGetIntegerv(GL_PACK_SKIP_PIXELS, &pixels);
+        glPopClientAttrib();
+        glReadBuffer(static_cast<GLenum>(saved_read));
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(saved_pbo));
+        glDeleteBuffers(1, &pbo);
+        if (buffer != GL_FRONT || static_cast<GLuint>(binding) != pbo ||
+            alignment != 8 || length != 23 || rows != 2 || pixels != 3)
+            throw std::runtime_error("Video readback changed GL pack or read-buffer state");
+        if (read) {
+            verified = true;
+            std::cerr << "Video smoke: restored GL read buffer and pack state ("
+                      << (picture == VideoPicture::Scene ? "scene" : "composited") << ")\n";
+        }
+    }
+};
+#endif
+
+int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node> smoke_node = {}
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        , std::optional<VideoSmoke> video_smoke = {}
+#endif
+) {
     const auto assets = sdl_path(SDL_GetBasePath())/"viz-data";
     const auto prefs = sdl_path(SDL_GetPrefPath("Bitcoin Viz","Observer"));
     const DisplayLifetime display_lifetime;
@@ -389,6 +453,16 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
         panel.open_node = !preview && recording.empty();
         Preview sample;
         View view(assets);
+        WindowVideoCapture video(display.sdl_window);
+        const auto capture_picture = [&](VideoPicture picture) {
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+            if (video_smoke) {
+                video_smoke->sample(video, picture);
+                return;
+            }
+#endif
+            video.sample(picture);
+        };
         Session session(prefs);
         std::future<std::optional<Node>> suggestion;
         NodeVerification verification;
@@ -422,13 +496,21 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
                     panel.toggle();
                     if (panel.visible) view.focus_overlay();
                 }
+                if (event.type == SDL_WINDOWEVENT && event.window.windowID == window &&
+                    event.window.event == SDL_WINDOWEVENT_MINIMIZED)
+                    video.stop("Window minimized");
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+                if (video_smoke && event.type == SDL_KEYDOWN && !event.key.repeat)
+                    video_smoke->key(video, event.key.keysym.sym);
+#endif
                 view.event(event,panel.visible);
             }
             if (!running) break;
             int drawable_width, drawable_height;
             SDL_GL_GetDrawableSize(display.sdl_window, &drawable_width, &drawable_height);
-            if (drawable_width <= 0 || drawable_height <= 0 ||
-                (SDL_GetWindowFlags(display.sdl_window) & SDL_WINDOW_MINIMIZED)) {
+            const bool minimized = (SDL_GetWindowFlags(display.sdl_window) & SDL_WINDOW_MINIMIZED) != 0;
+            video.update_drawable(drawable_width, drawable_height, minimized);
+            if (drawable_width <= 0 || drawable_height <= 0 || minimized) {
                 last = SDL_GetPerformanceCounter();
                 SDL_Delay(10);
                 continue;
@@ -481,6 +563,7 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             last = now;
             try { view.frame(SDL_GetTicks()*.001f,std::min(dt,.1f)); }
             catch (const std::exception& e) { view.clear(); panel.error=e.what(); }
+            capture_picture(VideoPicture::Scene);
             const bool fullscreen = (SDL_GetWindowFlags(display.sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
             panel.draw(state,fullscreen);
             const bool fullscreen_shortcut = ImGui::Shortcut(ImGuiKey_F,ImGuiInputFlags_RouteGlobal);
@@ -505,6 +588,7 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
             }
             ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+            capture_picture(VideoPicture::Composited);
             display.update();
             if (fullscreen_requested) {
                 panel.fullscreen_error.clear();
@@ -533,6 +617,7 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             }
             SDL_Delay(1);
         }
+        video.stop("Window closed");
     }
     return smoke ? 1 : 0;
 }
@@ -549,6 +634,14 @@ int main(int argc, char** argv) {
         const auto option = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path{};
         if (argc==2 && option=="--demo") return run(true,{});
         if (argc==2 && option=="--smoke-test") return run(true,{},true);
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        if (argc==4 && option=="--smoke-test" && std::filesystem::path(argv[2])=="--video") {
+            const std::filesystem::path output(argv[3]);
+            if (!std::filesystem::is_directory(output))
+                throw std::runtime_error("Video smoke requires an existing output directory");
+            return run(true,{},false,{},VideoSmoke{output});
+        }
+#endif
         if (argc==3 && option=="--smoke-test" && std::filesystem::path(argv[2])=="--regtest") {
             std::string line;
             if (!std::getline(std::cin,line)) throw std::runtime_error("Regtest smoke requires a fixture on stdin");

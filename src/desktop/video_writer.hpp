@@ -30,6 +30,8 @@ public:
     // Input must contain (height-1)*stride + width*3 bytes. Zero stride is packed.
     bool write_frame(const std::uint8_t* rgb, std::size_t bytes,
                      int stride = 0, bool bottom_up = false);
+    // Append the most recently encoded JPEG again without recompressing it.
+    bool repeat_frame();
     // Idempotent. A failed take keeps returning false until a new start.
     bool stop();
     bool active() const;

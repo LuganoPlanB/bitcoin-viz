@@ -16,6 +16,7 @@ struct VideoWriter::State {
     std::unique_ptr<unsigned char, JpegDelete> jpeg;
     std::unique_ptr<void, AviDelete> avi;
     unsigned long capacity = 0;
+    std::uint32_t jpeg_length = 0;
     VideoSettings settings;
     std::uint64_t frame_count = 0;
     bool opened = false;
@@ -109,7 +110,15 @@ bool VideoWriter::write_frame(const std::uint8_t* rgb, std::size_t bytes, int st
             return fail(std::string("JPEG compression failed: ") + tjGetErrorStr2(state->encoder.get()));
         if (!length || length > state->capacity || length > std::numeric_limits<std::uint32_t>::max())
             return fail("Invalid compressed JPEG length");
-        if (!aviwriter_write_chunk(state->avi.get(), 0, output, static_cast<std::uint32_t>(length)))
+        state->jpeg_length = static_cast<std::uint32_t>(length);
+        return repeat_frame();
+    } catch (const std::exception& e) { return fail(std::string("Video frame failed: ") + e.what()); }
+}
+
+bool VideoWriter::repeat_frame() {
+    if (!active() || !state->jpeg_length) return false;
+    try {
+        if (!aviwriter_write_chunk(state->avi.get(), 0, state->jpeg.get(), state->jpeg_length))
             return fail("AVI frame write failed");
         ++state->frame_count;
         return true;
