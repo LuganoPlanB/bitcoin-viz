@@ -81,7 +81,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build ccache libsqlite3-dev libzmq3-dev libcurl4-openssl-dev libssl-dev \
             libsdl2-dev libsdl2-image-dev libglew-dev libgl1-mesa-dev libglu1-mesa-dev libglm-dev \
-            libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev xvfb xauth xdotool ffmpeg
+            libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev libturbojpeg0-dev xvfb xauth xdotool ffmpeg
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: runner.os != 'Linux'
         with:
@@ -91,6 +91,12 @@ jobs:
       - name: Bootstrap macOS vcpkg
         if: runner.os == 'macOS'
         run: .tools/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Ensure FFmpeg test consumers
+        if: runner.os != 'Linux'
+        run: |
+          if ! command -v ffmpeg || ! command -v ffprobe; then
+            if [[ "$RUNNER_OS" == macOS ]]; then brew install ffmpeg; else choco install ffmpeg --yes --no-progress; fi
+          fi
       - name: Bootstrap Windows vcpkg
         if: runner.os == 'Windows'
         shell: pwsh

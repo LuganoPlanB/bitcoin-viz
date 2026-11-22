@@ -1,5 +1,10 @@
 # Desktop viewer notices
 
+The Motion JPEG AVI muxer uses avilib, Copyright (c) 2017 Arion Neddens,
+under the MIT license reproduced in `avilib/LICENSE`. The JPEG encoder uses
+libjpeg-turbo; vcpkg package notices are included under `dependencies` when
+packaged with static dependencies.
+
 Gource and Logstalgia, including their bundled textures and Gource's GLSL
 shaders, are distributed with their respective `COPYING` files. The vendored
 source revisions are listed in `third-party.md`. The GNU FreeFont files retain
