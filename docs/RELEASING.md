@@ -64,8 +64,8 @@ separately.
 ## Desktop builds
 
 The interactive viewer is enabled by the desktop build presets and uses a C++20 compiler, CMake 3.20 or
-later, and the system OpenGL 2.1-compatible driver. Install Python 3 for the
-desktop session tests. To include the real-node regtest in CTest, add
+later, and the system OpenGL 2.1-compatible driver. Install Python 3 and FFmpeg
+(including ffprobe) for the desktop tests. To include the real-node regtest in CTest, add
 `-DBITCOIN_VIZ_TEST_CORE_BIN_DIR=/path/to/core/bin` when configuring, using a
 Bitcoin Core build with ZMQ and wallet support. The test starts a private
 regtest with a temporary data directory.
@@ -85,13 +85,17 @@ On Debian or Ubuntu, install the CLI and graphics development packages:
 sudo apt install build-essential cmake ninja-build pkg-config ccache python3 \
   libzmq3-dev libsqlite3-dev libcurl4-openssl-dev libssl-dev \
   libsdl2-dev libsdl2-image-dev libglew-dev libgl1-mesa-dev libglu1-mesa-dev \
-  libglm-dev libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev
+  libglm-dev libpng-dev libfreetype-dev libboost-filesystem-dev libpcre2-dev libturbojpeg0-dev ffmpeg
 cmake --preset desktop
 cmake --build --preset desktop --parallel 2
 ctest --preset desktop
 cmake --install build/desktop --prefix "$HOME/Bitcoin Viz"
 "$HOME/Bitcoin Viz/bin/bitcoin-viz-desktop" --demo
 ```
+
+The video encoder uses the TurboJPEG 2.x API (`tjInitCompress`, `tjBufSize`,
+`tjCompress2`, `tjDestroy`), available in native libjpeg-turbo 2.1 and the pinned
+vcpkg 3.2 port. It links TurboJPEG directly; FFmpeg is used only for verification.
 
 The desktop uses the distribution's shared libraries and graphics stack. Keep
 the corresponding runtime libraries installed on systems where you run it.
@@ -100,7 +104,8 @@ binary. The Linux desktop build uses the native system toolchain.
 
 ### macOS
 
-Install the Xcode command-line tools, CMake, Ninja and Python 3. From the repo
+Install the Xcode command-line tools, CMake, Ninja, Python 3 and FFmpeg (including
+`ffprobe`, used by the headless video-writer test). From the repo
 root, bootstrap the same vcpkg revision used by the CLI releases:
 
 ```sh
@@ -129,7 +134,8 @@ build recipe does not include Developer ID signing or notarization.
 ### Windows
 
 Install Visual Studio 2022 with Desktop development with C++, the Windows SDK,
-CMake and Python 3. Run these commands in PowerShell at the repo root:
+CMake, Python 3 and FFmpeg (with `ffmpeg` and `ffprobe` on PATH for the
+headless video-writer test). Run these commands in PowerShell at the repo root:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git .tools/vcpkg

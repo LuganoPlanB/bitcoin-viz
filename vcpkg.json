@@ -20,6 +20,7 @@
         "glew",
         "glm",
         "libpng",
+        "libjpeg-turbo",
         {"name": "pcre2", "default-features": false},
         {"name": "sdl2", "default-features": false},
         {"name": "sdl2-image", "default-features": false, "features": ["libjpeg-turbo"]}

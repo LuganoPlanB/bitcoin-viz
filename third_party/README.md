@@ -19,6 +19,21 @@ Builds use this local copy and do not download dependencies.
 | [Dear ImGui](https://github.com/ocornut/imgui) | `367b2c24f399988ddafc0bb4628da0106bcc09be` (1.93.0 WIP, docking) | MIT, `imgui/LICENSE.txt` |
 | [imgui-modern-kit](https://github.com/AokiMotohide/imgui-modern-kit) | `986d8d286a74fb7b2f724b9ef5d008af139aa887` (4.1.0) | MIT, `imkit/LICENSE` and `imkit/THIRD_PARTY_NOTICES.md` |
 | [Inter](https://github.com/rsms/inter/releases/tag/v4.1) | 4.1, unmodified Regular and Bold from `extras/ttf/` | SIL OFL 1.1, `Logstalgia/data/fonts/Inter-OFL.txt` |
+| [avilib](https://github.com/arionik/avilib) | `57e9a206943f7aab0fbc663ad69e8c7417c1bc3d` | MIT, `avilib/LICENSE` |
+
+The avilib directory contains the library source and headers from that revision;
+its example program and upstream build files are omitted. Local change:
+`avilib.h` accepts `AVILIB_STATIC` to omit DLL declarations for the static library
+and its consumers. The desktop CMake target exports that definition and suppresses
+the upstream FOURCC multicharacter warnings. TurboJPEG is a separately linked
+system/vcpkg dependency.
+
+`writer.{h,cpp}` and the API wrappers also add seekable caller-owned streams and
+a configurable RIFF segment bound for tests, UTF-8/native filesystem output,
+external zero padding for odd payloads, per-index relative offsets at OpenDML
+rollover, reserved superindex bounds, and checked write/seek/flush/close results.
+Finalization is attempted once and preserves prior stream failures. Empty takes
+write a zero-entry superindex. Reader and audio behavior are not extended.
 
 Both engine snapshots include their pinned Core submodule trees as ordinary
 files. The two Core revisions have identical headers. Gource's revision adds
