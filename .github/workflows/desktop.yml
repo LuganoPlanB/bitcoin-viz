@@ -147,7 +147,7 @@ jobs:
         run: |
           version=$(tr -d '\r\n' < VERSION)
           smoke=()
-          if [[ "$RUNNER_OS" == Linux ]]; then smoke+=(--software-x11); fi
+          if [[ "$RUNNER_OS" == Linux ]]; then smoke+=(--software-x11 --video-playback); fi
           if [[ "$RUNNER_OS" == Windows ]]; then
             mesa_name=mesa3d-25.3.6-release-msvc.7z
             mesa_archive="$RUNNER_TEMP/$mesa_name"

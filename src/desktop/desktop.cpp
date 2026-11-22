@@ -362,6 +362,56 @@ struct NodeVerification {
 };
 
 #ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+struct VideoProfile {
+    using Clock = VideoCapture::Clock;
+    std::vector<double> frame_ms, readback_ms;
+    VideoCaptureMeasurements capture;
+    Clock::time_point started, previous_frame;
+    bool measuring = false, recording = false;
+
+    void prepare() {
+        frame_ms.clear();
+        readback_ms.clear();
+        capture.encode_ms.clear();
+        capture.peak_queued = 0;
+        frame_ms.reserve(32000);
+        readback_ms.reserve(1000);
+        capture.encode_ms.reserve(1000);
+    }
+
+    void begin(bool take) {
+        recording = take;
+        measuring = true;
+        started = Clock::now();
+        previous_frame = {};
+        std::cerr << "Video profile started: " << (recording ? "recording" : "idle") << '\n';
+    }
+
+    static double milliseconds(Clock::duration duration) {
+        return std::chrono::duration<double,std::milli>(duration).count();
+    }
+
+    void frame() {
+        if (!measuring) return;
+        const auto now = Clock::now();
+        if (previous_frame != Clock::time_point{}) frame_ms.push_back(milliseconds(now - previous_frame));
+        previous_frame = now;
+    }
+
+    void sample(WindowVideoCapture& video, VideoPicture picture) {
+        const auto now = Clock::now();
+        if (video.sample(picture)) readback_ms.push_back(milliseconds(Clock::now() - now));
+    }
+
+    void finish(Clock::time_point stopped) {
+        measuring = false;
+        std::cerr << "Video profile: " << Json{{"recording", recording},
+            {"elapsed_ms", milliseconds(stopped - started)}, {"frame_ms", frame_ms},
+            {"readback_ms", readback_ms}, {"encode_ms", capture.encode_ms},
+            {"peak_queued", capture.peak_queued}}.dump() << '\n';
+    }
+};
+
 struct VideoSmoke {
     fs::path directory;
     unsigned take = 0;
@@ -371,7 +421,7 @@ struct VideoSmoke {
         if (code == SDLK_F8) video.stop("Stopped");
         if ((code == SDLK_F6 || code == SDLK_F7) && !video.active()) {
             const auto path = directory / ("take-" + std::to_string(++take) + ".avi");
-            if (fs::exists(path) || !video.start(path, 95, code == SDLK_F7))
+            if (!video.start(directory, platform::utf8_path(path), 95, code == SDLK_F7))
                 throw std::runtime_error("Video smoke start rejected: " + platform::utf8_path(path));
             verified = false;
         }
@@ -422,11 +472,13 @@ struct VideoSmoke {
 
 int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node> smoke_node = {}
 #ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
-        , std::optional<VideoSmoke> video_smoke = {}
+        , std::optional<VideoSmoke> video_smoke = {}, bool profile_video = false
 #endif
 ) {
     const auto assets = sdl_path(SDL_GetBasePath())/"viz-data";
     const auto prefs = sdl_path(SDL_GetPrefPath("Bitcoin Viz","Observer"));
+    const auto video_directory = prefs/"recordings";
+    const auto video_directory_label = platform::utf8_path(video_directory);
     const DisplayLifetime display_lifetime;
     SDLAppInit("Bitcoin Viz","bitcoin-viz-desktop");
     display.enableHighDPIAwareness(true);
@@ -453,11 +505,22 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
         panel.open_node = !preview && recording.empty();
         Preview sample;
         View view(assets);
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        std::optional<VideoProfile> profile;
+        if (profile_video) profile.emplace();
+#endif
         WindowVideoCapture video(display.sdl_window);
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        if (profile) video.measure(&profile->capture);
+#endif
         const auto capture_picture = [&](VideoPicture picture) {
 #ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
             if (video_smoke) {
                 video_smoke->sample(video, picture);
+                return;
+            }
+            if (profile && profile->measuring && profile->recording) {
+                profile->sample(video, picture);
                 return;
             }
 #endif
@@ -502,6 +565,14 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
 #ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
                 if (video_smoke && event.type == SDL_KEYDOWN && !event.key.repeat)
                     video_smoke->key(video, event.key.keysym.sym);
+                if (profile && video.status() != VideoTakeStatus::Recording && event.type == SDL_KEYDOWN && !event.key.repeat &&
+                    event.key.keysym.sym == SDLK_F9) {
+                    if (profile->measuring) profile->finish(VideoProfile::Clock::now());
+                    else {
+                        profile->prepare();
+                        profile->begin(false);
+                    }
+                }
 #endif
                 view.event(event,panel.visible);
             }
@@ -563,9 +634,30 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             last = now;
             try { view.frame(SDL_GetTicks()*.001f,std::min(dt,.1f)); }
             catch (const std::exception& e) { view.clear(); panel.error=e.what(); }
-            capture_picture(VideoPicture::Scene);
             const bool fullscreen = (SDL_GetWindowFlags(display.sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
-            panel.draw(state,fullscreen);
+            panel.draw(state,fullscreen,video,video_directory_label);
+            const bool video_shortcut = ImGui::Shortcut(ImGuiKey_R,ImGuiInputFlags_RouteGlobal);
+            const bool video_input_busy = panel.visible &&
+                (ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive() || ImGui::IsAnyItemFocused());
+            if (std::exchange(panel.toggle_video,false) || (video_shortcut && !video_input_busy)) {
+                if (video.status() == VideoTakeStatus::Recording) {
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+                    const auto stopped = profile ? VideoProfile::Clock::now() : VideoProfile::Clock::time_point{};
+                    if (video.stop("Stopped") && profile) profile->finish(stopped);
+#else
+                    video.stop("Stopped");
+#endif
+                } else {
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+                    if (profile) profile->prepare();
+                    if (video.start(video_directory,panel.video_path,panel.video_quality,panel.include_overlay) && profile)
+                        profile->begin(true);
+#else
+                    video.start(video_directory,panel.video_path,panel.video_quality,panel.include_overlay);
+#endif
+                }
+            }
+            capture_picture(VideoPicture::Scene);
             const bool fullscreen_shortcut = ImGui::Shortcut(ImGuiKey_F,ImGuiInputFlags_RouteGlobal);
             const bool fullscreen_requested = std::exchange(panel.toggle_fullscreen,false) || fullscreen_shortcut;
             if (std::exchange(panel.test_connection,false)) {
@@ -589,6 +681,9 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
             }
             ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
             capture_picture(VideoPicture::Composited);
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+            if (profile) profile->frame();
+#endif
             display.update();
             if (fullscreen_requested) {
                 panel.fullscreen_error.clear();
@@ -635,6 +730,8 @@ int main(int argc, char** argv) {
         if (argc==2 && option=="--demo") return run(true,{});
         if (argc==2 && option=="--smoke-test") return run(true,{},true);
 #ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        if (argc==3 && option=="--smoke-test" && std::filesystem::path(argv[2])=="--video-profile")
+            return run(true,{},false,{},{},true);
         if (argc==4 && option=="--smoke-test" && std::filesystem::path(argv[2])=="--video") {
             const std::filesystem::path output(argv[3]);
             if (!std::filesystem::is_directory(output))

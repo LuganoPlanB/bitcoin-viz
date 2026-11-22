@@ -26,6 +26,9 @@ struct VideoCapture::State {
     Clock::time_point origin;
     std::optional<Slot> last_attempt;
     std::thread worker;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+    VideoCaptureMeasurements* profile = nullptr;
+#endif
 
     // The mutex covers buffer ownership transfers and session status only.
     // Neither the reader nor the encoder holds it while working on pixels.
@@ -123,10 +126,16 @@ bool VideoCapture::State::drain(VideoWriter& writer) {
         // If the first drawable arrives late, its JPEG also covers the leading
         // slots. Later gaps use the previous image up to the new frame's slot.
         const bool first = writer.frames() == 0;
-        if ((!first && !repeat_until(frame.slot)) ||
-            !writer.write_frame(frame.pixels.get(), bytes, stride, true) ||
-            (first && !repeat_until(frame.slot + 1)))
-            return false;
+        if (!first && !repeat_until(frame.slot)) return false;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        const auto before_encode = profile ? Clock::now() : Clock::time_point{};
+#endif
+        if (!writer.write_frame(frame.pixels.get(), bytes, stride, true)) return false;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+        if (profile) profile->encode_ms.push_back(
+            std::chrono::duration<double,std::milli>(Clock::now() - before_encode).count());
+#endif
+        if (first && !repeat_until(frame.slot + 1)) return false;
         {
             const std::lock_guard<std::mutex> lock(mutex);
             free[free_count++] = std::move(frame.pixels);
@@ -164,6 +173,9 @@ bool VideoCapture::start(VideoSettings settings, const OpenOutput& open_output) 
     stop(); // Join a failed worker before replacing the take.
     state = std::make_unique<State>();
     state->settings = settings;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+    state->profile = profile;
+#endif
     try {
         if (!state->allocate()) return false;
         state->worker = std::thread([take = state.get(), open_output] { take->run(open_output); });
@@ -201,6 +213,10 @@ bool VideoCapture::sample(const ReadPixels& read_pixels) {
         if (read) {
             take.pending[(take.head + take.pending_count) % buffer_count] = {std::move(pixels), slot};
             ++take.pending_count;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+            if (take.profile && take.pending_count > take.profile->peak_queued)
+                take.profile->peak_queued = take.pending_count;
+#endif
         } else {
             take.error = "Cannot read video pixels";
             take.active = false;
