@@ -2,12 +2,14 @@
 """Drive Bitcoin Viz through native X11 input on a private Xvfb display."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import ctypes as ct
 import json
 import math
 import os
 from pathlib import Path
+import re
 import select
 import sqlite3
 import subprocess
@@ -28,10 +30,10 @@ def wait_for(description, condition):
 
 
 @contextlib.contextmanager
-def display(env, dpi, output):
+def display(env, dpi, output, size=(1600, 1000)):
     reader, writer = os.pipe()
     with output.open("w") as log, subprocess.Popen(
-        ["Xvfb", "-displayfd", str(writer), "-screen", "0", "1600x1000x24",
+        ["Xvfb", "-displayfd", str(writer), "-screen", "0", f"{size[0]}x{size[1]}x24",
          "-dpi", str(dpi), "-nolisten", "tcp", "-ac"],
         pass_fds=[writer], stdout=log, stderr=log,
     ) as server:
@@ -454,6 +456,195 @@ def startup(view, node, data, opened):
     print("Startup performed TCP-only discovery. Test Connection verified the cookie, then Connect started observation.")
 
 
+def recording_output_path(view, path):
+    view.click(175, 132)
+    view.type(str(path))
+    view.key("Tab")  # Finish editing and focus JPEG quality by keyboard.
+
+
+def race_custom_output(view, path, started, stopped):
+    other_output = view.destination / "concurrent"
+    other_output.mkdir()
+    exists = "Video capture: Output already exists"
+    with display(view.env, 96, other_output / "xvfb.log") as other_env, \
+            (other_output / "viewer.log").open("w") as log, \
+            subprocess.Popen(view.app.args, env=other_env, cwd=path.parent, stdout=log, stderr=log) as app:
+        try:
+            other = Viewer(app, view.xdotool, other_env, other_output, 100)
+            other.resize(view.width, view.height)
+            other.until_log("Scene: Gource / state")
+            other.click(148, 100)
+            viewers = (view, other)
+            for candidate in viewers:
+                recording_output_path(candidate, path)
+            assert not path.exists()
+            before = [(v.log().count(started), v.log().count(exists)) for v in viewers]
+            with ThreadPoolExecutor(max_workers=2) as clicks:
+                intents = [clicks.submit(v.click, 42, 222) for v in viewers]
+                for intent in intents:
+                    intent.result(timeout=5)
+
+            winners = []
+            for candidate, (starts, conflicts) in zip(viewers, before, strict=True):
+                def outcome():
+                    log = candidate.log()
+                    count = (log.count(started) - starts, log.count(exists) - conflicts)
+                    return count if any(count) else None
+
+                result = wait_for("exclusive output result", outcome)
+                assert result in ((1, 0), (0, 1)), result
+                if result == (1, 0):
+                    winners.append(candidate)
+            winner, = winners
+            stops = winner.log().count(stopped)
+            winner.key("r")
+            winner.until_log(stopped, stops + 1)
+            close_window(other_env["DISPLAY"], other.window)
+            assert app.wait(8) == 0
+        finally:
+            if app.poll() is None:
+                app.kill()
+                app.wait(5)
+    print("Concurrent native starts produced one writer and one existing-file error.", flush=True)
+
+
+def exercise_recording(view, data):
+    takes = data / "Bitcoin Viz" / "Observer" / "recordings"
+    started = f"Video capture: Started {view.width}x{view.height}"
+    stopped = "Video capture: Stopped"
+    dated = re.compile(r"(bitcoin-viz-\d{4}-\d{2}-\d{2}-\d{6})(-\d+)?\.avi")
+
+    def clips():
+        paths = set(takes.glob("*.avi"))
+        assert all(dated.fullmatch(path.name) for path in paths)
+        return paths
+
+    def check(path):
+        streams = json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+            "stream=codec_name,width,height,r_frame_rate", "-of", "json", path,
+        ], timeout=10))["streams"]
+        assert streams == [dict(codec_name="mjpeg", width=view.width, height=view.height, r_frame_rate="30/1")]
+
+    def counts(starts, stops):
+        view.until_log(started, starts)
+        view.until_log(stopped, stops)
+        log = view.log()
+        assert log.count(started) == starts and log.count(stopped) == stops, log
+
+    view.until_log("Scene: Gource / state")
+    view.click(148, 100)
+    view.capture("recording-idle")
+    view.click(42, 222)  # Start
+    counts(1, 0)
+    view.pointer(view.width - 24, view.height - 24)
+    time.sleep(1)
+    view.capture("recording-active")
+    view.hold("r", 0.85)
+    counts(1, 1)
+    first, = clips()
+    check(first)
+    view.capture("recording-saved")
+
+    view.key("r")
+    counts(2, 1)
+    view.click(42, 222)  # Stop
+    counts(2, 2)
+    assert first in clips() and len(clips()) == 2
+
+    view.key("F1")
+    for key in ("ctrl+r", "alt+r", "shift+r", "super+r"):
+        view.key(key)
+        counts(2, 2)
+    view.key("r")
+    counts(3, 2)
+    view.key("r")
+    counts(3, 3)
+    view.key("F1")
+
+    # Schedule Start, Stop and Start just after a timestamp boundary. An
+    # overloaded X server can defer delivery, so retry the whole sequence.
+    total = 3
+    for _ in range(3):
+        before = clips()
+        time.sleep(1.06 - time.time() % 1)
+        view.xdo("key", "--delay", 160, "r", "r", "r")
+        total += 2
+        counts(total, total - 1)
+        view.key("r")
+        counts(total, total)
+        after = clips()
+        assert before < after and len(after - before) == 2
+        names = [dated.fullmatch(path.name).groups() for path in sorted(after - before)]
+        if names[0][0] == names[1][0]:
+            assert any(name[1] for name in names), names
+            for path in after - before:
+                check(path)
+            print("Same-second automatic takes:", ", ".join(path.name for path in sorted(after - before)), flush=True)
+            break
+    else:
+        raise AssertionError("Two automatic starts did not land in the same second")
+
+    view.click(175, 132)
+    view.key("r")  # An active text editor owns the key.
+    counts(total, total)
+    view.key("Tab")
+    view.key("r")  # A keyboard-focused quality slider also blocks the shortcut.
+    counts(total, total)
+
+    protected = data / "protected.avi"
+    payload = b"Keep this existing clip.\n"
+    protected.write_bytes(payload)
+    recording_output_path(view, protected)
+    view.click(42, 222)
+    view.until_log("Video capture: Output already exists")
+    counts(total, total)
+    assert protected.read_bytes() == payload
+
+    # An existing dangling symlink must be preserved too. Merely checking
+    # exists() would follow the link and permit creation of its missing target.
+    missing = data / "missing.avi"
+    link = data / "protected-link.avi"
+    link.symlink_to(missing)
+    recording_output_path(view, link)
+    view.click(42, 222)
+    view.until_log("Video capture: Output already exists", 2)
+    counts(total, total)
+    assert link.is_symlink() and not missing.exists()
+
+    restricted = data / "restricted"
+    restricted.mkdir()
+    restricted.chmod(0o500)
+    denied = (restricted if os.geteuid() else Path("/proc/self")) / "cannot-write.avi"
+    try:
+        recording_output_path(view, denied)
+        view.click(42, 222)
+        view.until_log("Video capture: Cannot create video output:")
+        counts(total, total)
+        assert not denied.exists()
+        view.capture("recording-error")
+    finally:
+        restricted.chmod(0o700)
+
+    custom = data / "take avec café.avi"
+    recording_output_path(view, custom)
+    view.key("Tab")  # Include overlay
+    view.key("space")
+    view.key("Tab")  # Start
+    view.key("Return")
+    counts(total + 1, total)
+    view.click(42, 222)
+    counts(total + 1, total + 1)
+    check(custom)
+    assert protected.read_bytes() == payload and link.is_symlink()
+    if view.scale == 100:
+        shared = data / "concurrent.avi"
+        race_custom_output(view, shared, started, stopped)
+        check(shared)
+    print(f"{view.width}x{view.height} at {view.scale}%: recording controls, shortcut and safe output checks passed.",
+          flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("viewer", type=Path)
@@ -463,6 +654,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--source-isolation", action="store_true", help="exercise source isolation at 1200x760")
     mode.add_argument("--startup", action="store_true", help="exercise TCP-only startup discovery and explicit verification")
+    mode.add_argument("--recording", action="store_true", help="exercise recording controls and dated and custom paths")
     args = parser.parse_args()
     if args.source_isolation and args.scale != 100:
         parser.error("--source-isolation uses the 100% overlay layout")
@@ -493,10 +685,12 @@ def main():
                         startup(view,node,data,opened)
                     elif args.source_isolation:
                         source_isolation(view,node,data,cookie)
+                    elif args.recording:
+                        exercise_recording(view,data)
                     else:
                         exercise(view,node,data,cookie)
                     stdout = view.log()
-                    if not args.source_isolation and not args.startup:
+                    if not (args.source_isolation or args.startup or args.recording):
                         assert stdout.count("Scene error:") == 1
                     assert node.cookie not in stdout and node.authorization not in stdout
                     close_window(viewer_env["DISPLAY"],view.window)

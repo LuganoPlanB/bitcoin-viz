@@ -108,6 +108,8 @@ def main():
     parser.add_argument("--version", required=True, help="expected desktop version")
     parser.add_argument("--regtest-core-bin", type=Path, metavar="DIRECTORY",
                         help="also render the installed viewer against an isolated Bitcoin Core regtest")
+    parser.add_argument("--video-playback", action="store_true",
+                        help="record all four renderer and overlay combinations and play an AVI under Xvfb")
     software = parser.add_mutually_exclusive_group()
     software.add_argument("--software-x11", action="store_true", help="run under Xvfb with Mesa software rendering")
     software.add_argument("--windows-software-gl", type=Path, metavar="ARCHIVE",
@@ -117,6 +119,8 @@ def main():
         parser.error("--software-x11 requires Linux")
     if args.windows_software_gl and sys.platform != "win32":
         parser.error("--windows-software-gl requires Windows")
+    if args.video_playback and not args.software_x11:
+        parser.error("--video-playback requires --software-x11")
 
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
@@ -202,6 +206,10 @@ def main():
             check_smoke(result, "blocks", args.windows_software_gl)
             if "Desktop smoke node: regtest / Connected / RPC + ZMQ sequence" not in result:
                 sys.exit("Missing connected regtest sequence source in the installed smoke")
+        if args.video_playback:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+            from desktop_video_installed import check_playback
+            check_playback(viewer, evidence / "video-playback", env)
 
 
 if __name__ == "__main__":

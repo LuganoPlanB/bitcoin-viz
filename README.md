@@ -33,8 +33,23 @@ shows generated activity so you can try the visualizations without a node.
 Turn it off to return to your node or recording. Use **Node** to select a
 network or edit the RPC URL, data directory, cookie path, or sequence endpoint.
 Select **Test Connection** to verify the node, then **Connect** to start
-collecting. To open an existing Bitcoin Viz recording, run
+collecting. To open an existing Bitcoin Viz SQLite recording, run
 `bitcoin-viz-desktop --db PATH`.
+
+Open **Recording** and select **Start**, or press **R**, to capture the viewer.
+Select **Stop** or press **R** again to save. The shortcut also works with the
+overlay hidden. Each take is a silent, lossy Motion JPEG AVI at the drawable's
+native resolution and 30 fps. It opens directly in a video player after Stop
+and can be used as source footage without converting it first.
+
+Leave **Output path** blank for a dated AVI in the `recordings` subdirectory of
+the desktop preferences folder. The tab shows the folder and the resolved take
+path. A custom path can target any writable folder. Existing files are protected
+and automatic filenames receive a suffix on collision. **JPEG quality** goes
+from 1 to 100 and defaults to 95. **Include overlay** is off by default. The scene
+and its labels appear in both modes. Start captures the selected settings for
+the whole take. Resizing the drawable, minimizing the window, or closing the
+viewer stops and saves the take.
 
 For an unconfigured mainnet connection, the viewer suggests plain HTTP at
 `127.0.0.1:8332` when the standard cookie is a regular file and the TCP port is

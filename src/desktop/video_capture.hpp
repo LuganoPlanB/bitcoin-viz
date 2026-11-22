@@ -4,8 +4,18 @@
 #include "video_writer.hpp"
 #include <chrono>
 #include <functional>
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+#include <vector>
+#endif
 
 namespace studio {
+
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+struct VideoCaptureMeasurements {
+    std::vector<double> encode_ms;
+    std::size_t peak_queued = 0;
+};
+#endif
 
 // One producer supplies pixels on its own thread. The capture worker owns the
 // codec and output. Calls to start, sample and stop must be on the producer thread.
@@ -30,12 +40,19 @@ public:
     bool stop();
     bool active() const;
     std::string error() const;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+    // Set before starting a take and read only after stop joins the worker.
+    void measure(VideoCaptureMeasurements* measurements) { profile = measurements; }
+#endif
 
 private:
     struct State;
     using OpenOutput = std::function<bool(VideoWriter&, VideoSettings)>;
     std::function<Clock::time_point()> now;
     std::unique_ptr<State> state;
+#ifdef BITCOIN_VIZ_TEST_VIDEO_CAPTURE
+    VideoCaptureMeasurements* profile = nullptr;
+#endif
 
     bool start(VideoSettings settings, const OpenOutput& open_output);
 };

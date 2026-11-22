@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "panel.hpp"
 #include "platform.hpp"
+#include "window_video_capture.hpp"
 #include <imkit/components.h>
 #include <imkit/widgets.h>
 #include <misc/cpp/imgui_stdlib.h>
@@ -54,6 +55,49 @@ void parameters(Panel& p) {
     ImGui::TextDisabled("%s",live_parameter(p.engine,key) ? "Updates the current scene" : "Rebuilds the scene");
     ImGui::PopID();
 }
+
+void recording_controls(Panel& panel, const WindowVideoCapture& video, const std::string& directory,
+                        float label_width) {
+    const bool active = video.status() == VideoTakeStatus::Recording;
+    ImGui::BeginDisabled(active);
+    setting("Output path",label_width,[&] {
+        ImGui::InputTextWithHint("##Output path","Automatic dated name",&panel.video_path);
+    });
+    setting("JPEG quality",label_width,[&] {
+        imkit::SliderInt("##JPEG quality",&panel.video_quality,1,100,"%d",ImGuiSliderFlags_AlwaysClamp);
+    });
+    imkit::Checkbox("Include overlay",&panel.include_overlay);
+    ImGui::EndDisabled();
+
+    if (imkit::Button(active ? "Stop###VideoTake" : "Start###VideoTake")) panel.toggle_video = true;
+    ImGui::SetItemTooltip("Keyboard shortcut: R");
+    ImGui::SameLine();
+    const auto seconds = video.elapsed().count();
+    ImGui::Text("Elapsed %02lld:%02lld",static_cast<long long>(seconds / 60),
+                static_cast<long long>(seconds % 60));
+
+    switch (video.status()) {
+    case VideoTakeStatus::Idle:
+        if (panel.video_path.empty()) {
+            ImGui::TextUnformatted("Automatic folder");
+            ImGui::TextWrapped("%s",directory.c_str());
+        }
+        break;
+    case VideoTakeStatus::Recording:
+        ImGui::TextUnformatted("Recording");
+        break;
+    case VideoTakeStatus::Saved:
+        if (video.detail() == "Stopped") ImGui::TextUnformatted("Saved");
+        else ImGui::TextWrapped("Saved (%s)",video.detail().c_str());
+        break;
+    case VideoTakeStatus::Error:
+        ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,.63f,.57f,1));
+        ImGui::TextWrapped("%s",video.detail().c_str());
+        ImGui::PopStyleColor();
+        break;
+    }
+    if (!video.path().empty()) ImGui::TextWrapped("%s",bitcoin_viz::platform::utf8_path(video.path()).c_str());
+}
 }
 void Panel::toggle() {
     visible = !visible;
@@ -61,7 +105,8 @@ void Panel::toggle() {
     if (!visible) ImGui::SetWindowFocus(nullptr);
 }
 
-void Panel::draw(const Connection& connection, bool fullscreen) {
+void Panel::draw(const Connection& connection, bool fullscreen, const WindowVideoCapture& video,
+                 const std::string& video_directory) {
     if (!visible) return;
     const auto& style = ImGui::GetStyle();
     const auto& viewport = *ImGui::GetMainViewport();
@@ -184,6 +229,10 @@ void Panel::draw(const Connection& connection, bool fullscreen) {
                 ImGui::TextWrapped("%s",tested.status.c_str());
                 if (!tested.target) ImGui::PopStyleColor();
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Recording")) {
+            recording_controls(*this,video,video_directory,label_width);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

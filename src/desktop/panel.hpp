@@ -4,6 +4,8 @@
 #include "scene.hpp"
 
 namespace studio {
+class WindowVideoCapture;
+
 struct Panel {
     int engine = 0;
     int projection[2]{};
@@ -20,7 +22,11 @@ struct Panel {
     int cap = 5000, applied_cap = 5000;
     std::string error;
     std::string fullscreen_error;
+    std::string video_path;
+    int video_quality = 95;
+    bool include_overlay = false, toggle_video = false;
     void toggle();
-    void draw(const Connection& connection, bool fullscreen);
+    void draw(const Connection& connection, bool fullscreen, const WindowVideoCapture& video,
+              const std::string& video_directory);
 };
 }
