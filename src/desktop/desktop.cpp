@@ -11,6 +11,10 @@
 #include <future>
 #include <iostream>
 #include <limits>
+#ifdef _WIN32
+#include <cstdlib>
+#include <windows.h>
+#endif
 
 namespace {
 using namespace studio;
@@ -718,7 +722,9 @@ int run(bool preview, fs::path recording, bool smoke = false, std::optional<Node
 }
 }
 #ifdef _WIN32
-int wmain(int argc, wchar_t** argv) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    const int argc = __argc;
+    auto** argv = __wargv;
 #else
 int main(int argc, char** argv) {
 #endif

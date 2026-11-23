@@ -34,8 +34,9 @@ dependency copyrights, and adds `MANIFEST.json`, `VERSION`, `README.md` and
 `bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz`. The Windows asset is
 `bitcoin-viz-vVERSION-windows-x86_64-setup.exe`. Each contains the CLI,
 viewer, resources and licenses. Extract the whole archive on Linux or macOS.
-On Windows, Setup installs both executables for the current user and adds the
-Bitcoin Viz Start menu shortcut.
+On Windows, Setup installs both executables for the current user. The final
+page offers to start the viewer and add a Start menu shortcut. An unattended
+install adds the shortcut automatically.
 
 `ci/release/collect.cmake` requires four archives and the Windows installer.
 It checks the executable paths, version, commit, platform and architecture.
@@ -166,8 +167,9 @@ $setup = Resolve-Path "build/desktop-windows/installer/bitcoin-viz-v$version-win
 Start-Process -FilePath $setup.Path -ArgumentList '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait
 ```
 
-Setup defaults to `%LOCALAPPDATA%\Programs\Bitcoin Viz`. The executable and
-installer icons are generated from the orange Bitcoin Roots SVG published in the
+Setup defaults to `%LOCALAPPDATA%\Programs\Bitcoin Viz`. The wizard uses the
+Bitcoin Roots and Lugano's Plan ₿ logos. The executable and installer icons
+are generated from the orange Bitcoin Roots SVG published in the
 [Plan ₿ branding guide](https://plan-b.foundation/branding). Regenerate the checked-in ICO with
 `magick -background none ci/release/bitcoin-roots.svg -define icon:auto-resize=256,128,64,48,32,24,16 ci/release/bitcoin-roots.ico`.
 

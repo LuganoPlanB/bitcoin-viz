@@ -19,8 +19,9 @@ system's shared libraries.
 
 Download your platform's package from
 [GitHub Releases](https://github.com/luganoplanb/bitcoin-viz/releases). On
-Windows, run the `-setup.exe` installer and open **Bitcoin Viz** from the
-Start menu. On Linux and macOS, extract the whole archive. To build locally,
+Windows, run the `-setup.exe` installer. On the last page you can start
+**Bitcoin Viz** and add a Start menu shortcut. On Linux and macOS, extract the
+whole archive. To build locally,
 follow the [desktop build and install recipes](docs/RELEASING.md#desktop-builds).
 Launch the installed `bitcoin-viz-desktop` to set up
 a local Bitcoin Core or Bitcoin Roots node, or pass `--demo` to preview synthetic

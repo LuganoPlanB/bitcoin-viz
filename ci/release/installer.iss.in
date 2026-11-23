@@ -4,8 +4,8 @@ AppName=@APP_NAME@
 AppVersion=@VERSION@
 AppPublisher=@APP_PUBLISHER@
 AppPublisherURL=@APP_HOMEPAGE@
-AppSupportURL=@APP_HOMEPAGE@/issues
-AppUpdatesURL=@APP_HOMEPAGE@/releases
+AppSupportURL=@APP_REPOSITORY@/issues
+AppUpdatesURL=@APP_REPOSITORY@/releases
 AppComments=@APP_DESCRIPTION@
 VersionInfoVersion=@VERSION@
 VersionInfoProductVersion=@VERSION@
@@ -14,13 +14,16 @@ VersionInfoCompany=@APP_PUBLISHER@
 VersionInfoDescription=@APP_NAME@ Setup
 DefaultDirName={localappdata}\Programs\@APP_NAME@
 DefaultGroupName=@APP_NAME@
+DisableWelcomePage=no
 DisableDirPage=no
 DisableProgramGroupPage=yes
+DisableReadyPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 WizardStyle=classic
+WizardImageFile=@APP_WIZARD_IMAGE@
 LicenseFile=@stage@/share/bitcoin-viz/LICENSE
 SetupIconFile=@APP_ICON@
 UninstallDisplayName=@APP_NAME@
@@ -28,8 +31,89 @@ UninstallDisplayIcon={app}\bin\bitcoin-viz-desktop.exe
 OutputDir=@output@
 OutputBaseFilename=@installer_basename@
 
+[Messages]
+WelcomeLabel2=@APP_DESCRIPTION@.%n%nBrought to you by Lugano's Plan ₿.
+
 [Files]
 Source: "@stage@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\@APP_NAME@"; Filename: "{app}\bin\bitcoin-viz-desktop.exe"; WorkingDir: "{app}"
+Name: "{group}\@APP_NAME@"; Filename: "{app}\bin\bitcoin-viz-desktop.exe"; WorkingDir: "{app}"; Check: WizardSilent
+
+[Run]
+Filename: "{app}\bin\bitcoin-viz-desktop.exe"; Description: "Start @APP_NAME@"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent unchecked
+
+[UninstallDelete]
+Type: files; Name: "{group}\@APP_NAME@.lnk"
+Type: dirifempty; Name: "{group}"
+
+[Code]
+var
+  StartMenuCheck: TNewCheckBox;
+
+procedure OpenProjectPage(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+var
+  ErrorCode: Integer;
+begin
+  if not ShellExec('open', '@APP_HOMEPAGE@', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode) then
+    MsgBox(SysErrorMessage(ErrorCode), mbError, MB_OK);
+end;
+
+procedure InitializeWizard;
+var
+  ProjectLink: TNewLinkLabel;
+begin
+  ProjectLink := TNewLinkLabel.Create(WizardForm);
+  ProjectLink.Parent := WizardForm.WelcomePage;
+  ProjectLink.Left := WizardForm.WelcomeLabel2.Left;
+  WizardForm.AdjustLabelHeight(WizardForm.WelcomeLabel2);
+  ProjectLink.Top := WizardForm.WelcomeLabel2.Top + WizardForm.WelcomeLabel2.Height + ScaleY(12);
+  ProjectLink.Width := WizardForm.WelcomeLabel2.Width;
+  ProjectLink.Caption := '<a href="@APP_HOMEPAGE@">@APP_NAME@</a>';
+  ProjectLink.AdjustHeight;
+  ProjectLink.OnLinkClick := @OpenProjectPage;
+  ProjectLink.TabStop := True;
+
+  StartMenuCheck := TNewCheckBox.Create(WizardForm);
+  StartMenuCheck.Parent := WizardForm.FinishedPage;
+  StartMenuCheck.Caption := 'Add @APP_NAME@ to the Start menu';
+  StartMenuCheck.Left := WizardForm.RunList.Left;
+  StartMenuCheck.Width := WizardForm.RunList.Width;
+  StartMenuCheck.Height := ScaleY(20);
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectDir then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+  if (CurPageID = wpFinished) and not WizardSilent then begin
+    WizardForm.RunList.Height := ScaleY(22);
+    StartMenuCheck.Top := WizardForm.RunList.Top + WizardForm.RunList.Height + ScaleY(4);
+    StartMenuCheck.Checked := FileExists(ExpandConstant('{group}\@APP_NAME@.lnk'));
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Folder, Shortcut: String;
+begin
+  Result := True;
+  if (CurPageID <> wpFinished) or WizardSilent then
+    exit;
+  Folder := ExpandConstant('{group}');
+  Shortcut := Folder + '\@APP_NAME@.lnk';
+  if StartMenuCheck.Checked then begin
+    try
+      if not ForceDirectories(Folder) then
+        RaiseException('Could not open the Start menu folder.');
+      CreateShellLink(Shortcut, '@APP_NAME@', ExpandConstant('{app}\bin\bitcoin-viz-desktop.exe'),
+        '', ExpandConstant('{app}'), '', 0, SW_SHOWNORMAL);
+    except
+      MsgBox(GetExceptionMessage, mbError, MB_OK);
+      Result := False;
+    end;
+  end else if FileExists(Shortcut) and not DeleteFile(Shortcut) then begin
+    MsgBox('Could not remove the @APP_NAME@ Start menu shortcut.', mbError, MB_OK);
+    Result := False;
+  end;
+end;
