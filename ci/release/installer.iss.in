@@ -1,0 +1,35 @@
+[Setup]
+AppId={{c6869cca-c9e9-43cd-8756-020bf8916539}
+AppName=@APP_NAME@
+AppVersion=@VERSION@
+AppPublisher=@APP_PUBLISHER@
+AppPublisherURL=@APP_HOMEPAGE@
+AppSupportURL=@APP_HOMEPAGE@/issues
+AppUpdatesURL=@APP_HOMEPAGE@/releases
+AppComments=@APP_DESCRIPTION@
+VersionInfoVersion=@VERSION@
+VersionInfoProductVersion=@VERSION@
+VersionInfoProductName=@APP_NAME@
+VersionInfoCompany=@APP_PUBLISHER@
+VersionInfoDescription=@APP_NAME@ Setup
+DefaultDirName={localappdata}\Programs\@APP_NAME@
+DefaultGroupName=@APP_NAME@
+DisableDirPage=no
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+WizardStyle=classic
+LicenseFile=@stage@/share/bitcoin-viz/LICENSE
+SetupIconFile=@APP_ICON@
+UninstallDisplayName=@APP_NAME@
+UninstallDisplayIcon={app}\bin\bitcoin-viz-desktop.exe
+OutputDir=@output@
+OutputBaseFilename=@installer_basename@
+
+[Files]
+Source: "@stage@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\@APP_NAME@"; Filename: "{app}\bin\bitcoin-viz-desktop.exe"; WorkingDir: "{app}"

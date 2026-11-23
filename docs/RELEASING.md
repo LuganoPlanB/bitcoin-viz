@@ -30,16 +30,18 @@ header from `VERSION`; `BITCOIN_VIZ_VERSION` can explicitly override it.
 `ci/release/package.cmake` packages the installed executables and licenses, gathers
 dependency copyrights, and adds `MANIFEST.json`, `VERSION`, `README.md` and
 `SOURCE.txt`. Source links point to the exact commit in
-`luganoplanb/bitcoin-viz`. Archives are named
-`bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz` (`.zip` on Windows). Each contains
-the CLI, the viewer, the viewer's resources and licenses.
-Launch `bin/bitcoin-viz-desktop` on Linux, `bin/bitcoin-viz-desktop.exe` on
-Windows, or `bin/bitcoin-viz-desktop.app` on macOS. Extract the whole archive
-so the application can find its resources.
+`luganoplanb/bitcoin-viz`. Linux and macOS archives are named
+`bitcoin-viz-vVERSION-PLATFORM-ARCH.tar.gz`. The Windows asset is
+`bitcoin-viz-vVERSION-windows-x86_64-setup.exe`. Each contains the CLI,
+viewer, resources and licenses. Extract the whole archive on Linux or macOS.
+On Windows, Setup installs both executables for the current user and adds the
+Bitcoin Viz Start menu shortcut.
 
-`ci/release/collect.cmake` requires one combined archive for each of the five
-targets. It verifies both executable paths and the version, source commit,
-platform and architecture before writing `SHA256SUMS`. Only after all builds and checks pass does the
+`ci/release/collect.cmake` requires four archives and the Windows installer.
+It checks the executable paths, version, commit, platform and architecture.
+The Windows smoke test compares the installed manifest to the build receipt,
+and the collector checks that receipt against the installer hash. The receipt
+is used within CI. Only after all builds and checks pass does the
 publish job tag the tested candidate and publish the complete release. Existing
 published assets are preserved; a draft can be resumed. If `main` still points to
 the starting commit, it is fast-forwarded to the tested version commit with
@@ -155,11 +157,25 @@ viewer in a graphical Windows session with the graphics vendor's OpenGL
 driver. Keep `bin/viz-data` and `share/bitcoin-viz` with the binary when moving
 the install prefix. Core can publish ZMQ sequence over a loopback TCP address.
 
+With Inno Setup 6.4.3 installed, build the release installer and run it unattended:
+
+```powershell
+cmake --build --preset desktop-windows --target win-installer
+$version = (Get-Content VERSION -Raw).Trim()
+$setup = Resolve-Path "build/desktop-windows/installer/bitcoin-viz-v$version-windows-x86_64-setup.exe"
+Start-Process -FilePath $setup.Path -ArgumentList '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait
+```
+
+Setup defaults to `%LOCALAPPDATA%\Programs\Bitcoin Viz`. The executable and
+installer icons are generated from the orange Bitcoin Roots SVG published in the
+[Plan ₿ branding guide](https://plan-b.foundation/branding). Regenerate the checked-in ICO with
+`magick -background none ci/release/bitcoin-roots.svg -define icon:auto-resize=256,128,64,48,32,24,16 ci/release/bitcoin-roots.ico`.
+
 ### Installed package checks
 
 The [desktop checks](../.github/workflows/desktop.yml) build, test and package on
 native runners. The release workflow calls the same checks on the versioned
-candidate and publishes the packages that passed. The checks launch the extracted viewer from
+candidate and publishes the packages that passed. The checks launch the packaged viewer from
 an unrelated directory at a path containing spaces and Unicode characters.
 Each run records the package checksum, OS, OpenGL renderer and version, logical
 and drawable size, and overlay scale. The Linux CI check uses Xvfb and Mesa
@@ -167,23 +183,24 @@ software rendering. Native X11 input also exercises startup prefill, explicit
 verification and connection against an owned loopback fixture. Windows CI uses
 the checksum-pinned Mesa for Windows 25.3.6 MSVC build for software rendering on
 its hosted runner. The smoke harness places the two Mesa OpenGL DLLs beside the
-extracted viewer in its temporary directory. The archive contains the original
-staged application. A hardware check uses the system driver in a graphical
+installed viewer in its temporary directory. The smoke test runs the uninstaller
+after exercising the application. A hardware check uses the system driver in a graphical
 session on a GPU-equipped machine. [Windows Mesa release](https://github.com/pal1000/mesa-dist-win/releases/tag/25.3.6),
 [Mesa app-local setup](https://docs.mesa3d.org/drivers/llvmpipe.html#windows).
 
-To repeat the installed smoke against a local prefix:
+To repeat the installed smoke against a Linux archive:
 
 ```sh
-python3 ci/desktop/installed.py "$HOME/Bitcoin Viz" ./build/desktop-evidence \
+python3 ci/desktop/installed.py ./build/bitcoin-viz-vVERSION-linux-x86_64.tar.gz ./build/desktop-evidence \
   --version "$(cat VERSION)"
 ```
 
-Use `python` on Windows. On Linux with `xvfb` and `xauth` installed, append
+On Windows, pass the built installer and keep its JSON receipt alongside it.
+On Linux with `xvfb` and `xauth` installed, append
 `--software-x11` to exercise software rendering in a private X server. An
 unavailable graphics driver or display causes the smoke check to fail with a
 startup diagnostic. The desktop check workflow uploads its evidence as CI
-artifacts. The existing versioned release workflow builds CLI archives.
+artifacts.
 
 Add `--regtest-core-bin /path/to/core/bin` to also start a disposable local
 regtest node and check both engines against its connected RPC and ZMQ session.

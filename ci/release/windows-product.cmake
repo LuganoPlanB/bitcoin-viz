@@ -1,0 +1,5 @@
+set(APP_NAME "Bitcoin Viz")
+set(APP_PUBLISHER "Lugano Plan ₿")
+set(APP_HOMEPAGE "https://github.com/luganoplanb/bitcoin-viz")
+set(APP_DESCRIPTION "Bitcoin network activity visualizer and recorder")
+set(APP_ICON "${CMAKE_CURRENT_LIST_DIR}/bitcoin-roots.ico")

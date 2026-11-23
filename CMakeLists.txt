@@ -67,6 +67,28 @@ install(TARGETS bitcoin-viz RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(BITCOIN_VIZ_DESKTOP)
   add_subdirectory(src/desktop)
 endif()
+if(WIN32)
+  enable_language(RC)
+  include(ci/release/windows-product.cmake)
+  foreach(app bitcoin-viz bitcoin-viz-desktop)
+    if(TARGET "${app}")
+      set(APP_EXECUTABLE "${app}.exe")
+      configure_file(ci/release/windows-version.rc.in "generated/${app}.rc" @ONLY)
+      target_sources("${app}" PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/${app}.rc")
+    endif()
+  endforeach()
+  if(TARGET bitcoin-viz-desktop AND CMAKE_SIZEOF_VOID_P EQUAL 8
+      AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$"
+      AND NOT CMAKE_GENERATOR_PLATFORM MATCHES "^ARM64")
+    add_custom_target(win-installer
+      COMMAND "${CMAKE_COMMAND}" "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DCONFIG=$<CONFIG>"
+        "-DVERSION=${PROJECT_VERSION}" "-DVCPKG_INSTALLED_DIR=${VCPKG_INSTALLED_DIR}"
+        "-DVCPKG_TARGET_TRIPLET=${VCPKG_TARGET_TRIPLET}"
+        -P "${PROJECT_SOURCE_DIR}/ci/release/win-installer.cmake"
+      DEPENDS bitcoin-viz bitcoin-viz-desktop
+      VERBATIM)
+  endif()
+endif()
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/bitcoin-viz)
 install(FILES third_party/nlohmann/LICENSE.MIT
   DESTINATION ${CMAKE_INSTALL_DATADIR}/bitcoin-viz RENAME nlohmann-LICENSE.MIT)

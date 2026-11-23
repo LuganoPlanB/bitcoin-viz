@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Smoke-test both executables extracted from a release archive."""
+"""Smoke-test the packaged CLI and desktop viewer."""
 
 import argparse
+from contextlib import ExitStack
 from hashlib import sha256
 import json
 import os
@@ -15,6 +16,8 @@ import time
 
 
 WINDOWS_MESA_SHA256 = "ca56d92bb2254a9a25557c95cfe27f02071a77b26daff4cbf9bc125ed3347fb5"
+INNO_SILENT = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+WINDOWS_SHORTCUT = Path("Microsoft/Windows/Start Menu/Programs/Bitcoin Viz/Bitcoin Viz.lnk")
 
 
 def run(args, cwd, env, log, input_text=None):
@@ -47,6 +50,31 @@ def install_windows_software_gl(archive, bindir, work, evidence):
     (evidence / "windows-mesa-fixture.txt").write_text(
         f"mesa-dist-win 25.3.6 release-msvc x64 SHA256 {digest}\n", encoding="utf-8",
     )
+
+
+def uninstall_windows(destination, work, evidence):
+    uninstaller, = destination.glob("unins*.exe")
+    run([uninstaller, *INNO_SILENT, f"/LOG={evidence / 'uninstall.log'}"],
+        work, os.environ.copy(), evidence / "uninstall-console.log")
+    for relative in ("bin/bitcoin-viz.exe", "bin/bitcoin-viz-desktop.exe", "MANIFEST.json"):
+        if (destination / relative).exists():
+            sys.exit(f"Uninstaller left behind {relative}")
+    if (Path(os.environ["APPDATA"]) / WINDOWS_SHORTCUT).exists():
+        sys.exit("Uninstaller left behind the Start menu shortcut")
+
+
+def install_windows(installer, destination, work, evidence, cleanup, digest):
+    run([installer, "/SP-", *INNO_SILENT, f"/DIR={destination}",
+         f"/LOG={evidence / 'setup.log'}"], work, os.environ.copy(), evidence / "setup-console.log")
+    cleanup.callback(uninstall_windows, destination, work, evidence)
+    if not (Path(os.environ["APPDATA"]) / WINDOWS_SHORTCUT).is_file():
+        sys.exit("Installer did not create the Start menu shortcut")
+    receipt = json.loads(installer.with_suffix(".exe.json").read_text(encoding="utf-8"))
+    if receipt.pop("sha256") != digest:
+        sys.exit("Installer receipt checksum mismatch")
+    manifest = json.loads((destination / "MANIFEST.json").read_text(encoding="utf-8"))
+    if manifest != receipt:
+        sys.exit("Installed manifest differs from the installer receipt")
 
 
 def run_regtest_smoke(smoke, core_bin, work, env, evidence):
@@ -113,7 +141,7 @@ def main():
     software = parser.add_mutually_exclusive_group()
     software.add_argument("--software-x11", action="store_true", help="run under Xvfb with Mesa software rendering")
     software.add_argument("--windows-software-gl", type=Path, metavar="ARCHIVE",
-                          help="use the pinned Mesa DLLs in the extracted Windows smoke directory")
+                          help="use the pinned Mesa DLLs in the temporary Windows installation")
     args = parser.parse_args()
     if args.software_x11 and sys.platform != "linux":
         parser.error("--software-x11 requires Linux")
@@ -127,20 +155,25 @@ def main():
     archive = args.archive.resolve(strict=True)
     windows = sys.platform == "win32"
     macos = sys.platform == "darwin"
-    suffix = ".zip" if windows else ".tar.gz"
+    suffix = "-setup.exe" if windows else ".tar.gz"
     if not archive.name.endswith(suffix):
-        parser.error(f"expected a {suffix} release archive")
+        parser.error(f"expected a {suffix} release package")
     prefix = archive.name.removesuffix(suffix)
-    identity = f"{sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n"
+    digest = sha256(archive.read_bytes()).hexdigest()
+    identity = f"{digest}  {archive.name}\n"
     (evidence / "SHA256SUMS").write_text(identity, encoding="utf-8")
     (evidence / "platform.txt").write_text(platform.platform() + "\n", encoding="utf-8")
     print(platform.platform(), identity, sep="\n", end="", flush=True)
 
-    with tempfile.TemporaryDirectory(prefix="bitcoin-viz-install-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="bitcoin-viz-install-") as scratch, ExitStack() as cleanup:
         work = Path(scratch)
         destination = work / "Relocated viewer – café"
-        shutil.unpack_archive(archive, destination)
-        relocated = destination / prefix
+        if windows:
+            install_windows(archive, destination, work, evidence, cleanup, digest)
+            relocated = destination
+        else:
+            shutil.unpack_archive(archive, destination)
+            relocated = destination / prefix
         bindir = relocated / "bin"
         if macos:
             contents = bindir / "bitcoin-viz-desktop.app" / "Contents"

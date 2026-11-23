@@ -142,7 +142,12 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" .release/assets/* --clobber
+          legacy_windows_asset="bitcoin-viz-${RELEASE_TAG}-windows-x86_64.zip"
+          release_assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          if grep -Fxq "$legacy_windows_asset" <<< "$release_assets"; then
+            gh release delete-asset "$RELEASE_TAG" "$legacy_windows_asset" --yes
+          fi
+          gh release upload "$RELEASE_TAG" .release/assets/*.tar.gz .release/assets/*-setup.exe .release/assets/SHA256SUMS --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest
           git fetch origin main
           if test "$(git rev-parse origin/main)" = "$SOURCE_COMMIT"; then

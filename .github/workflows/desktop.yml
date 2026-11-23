@@ -101,6 +101,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: .\.tools\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.4.3.exe'
+          $destination = Join-Path $env:RUNNER_TEMP 'Inno Setup'
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe'
+          Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 120
+          if ((Get-FileHash $installer).Hash -ne 'F3C42116542C4CC57263C5BA6C4FEABFC49FE771F2F98A79D2F7628B8762723B') {
+            throw 'Inno Setup checksum mismatch'
+          }
+          $process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList (
+            '/PORTABLE=1 /CURRENTUSER /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="{0}"' -f $destination
+          )
+          if ($process.ExitCode -ne 0) { throw "Inno Setup exited $($process.ExitCode)" }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $destination
       - name: Extract pinned Bitcoin Core regtest fixture
         env:
           CORE_ARCHIVE: ${{ matrix.core_archive }}
@@ -127,8 +143,17 @@ jobs:
           cmake --preset "$PRESET" "${configure[@]}"
           cmake --build --preset "$PRESET" --parallel 2
           ctest --preset "$PRESET" --output-junit "$RUNNER_TEMP/viz-evidence/ctest.xml"
-          cmake --install "build/$PRESET" --config Release --prefix "$RUNNER_TEMP/Desktop install"
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            cmake --install "build/$PRESET" --config Release --prefix "$RUNNER_TEMP/Desktop install"
+          fi
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          cmake --build --preset desktop-windows --target win-installer
+          mkdir -p "$RUNNER_TEMP/viz-package"
+          cp build/desktop-windows/installer/bitcoin-viz-v* "$RUNNER_TEMP/viz-package/"
       - name: Package the desktop viewer
+        if: runner.os != 'Windows'
         env:
           PRESET: ${{ matrix.preset }}
           TARGET_PLATFORM: ${{ matrix.platform }}
@@ -143,7 +168,7 @@ jobs:
           cmake -DVERSION="$version" -DPLATFORM="$TARGET_PLATFORM" -DARCH="$TARGET_ARCH" \
             -DSTAGE="$RUNNER_TEMP/Desktop install" -DOUTPUT="$RUNNER_TEMP/viz-package" \
             "${dependency_licenses[@]}" -P ci/release/package.cmake
-      - name: Smoke-test the extracted application
+      - name: Smoke-test the installed application
         run: |
           version=$(tr -d '\r\n' < VERSION)
           smoke=()
@@ -155,7 +180,10 @@ jobs:
               "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/$mesa_name"
             smoke+=(--windows-software-gl "$mesa_archive")
           fi
-          archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-v*)
+          archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-v*.tar.gz)
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            archive=("$RUNNER_TEMP/viz-package"/bitcoin-viz-v*-setup.exe)
+          fi
           python -B ci/desktop/installed.py "${archive[0]}" "$RUNNER_TEMP/viz-evidence" \
             --version "$version" --regtest-core-bin "$RUNNER_TEMP/viz-core/bitcoin-32.1/bin" "${smoke[@]}"
       - name: Exercise the Linux overlay via native input
